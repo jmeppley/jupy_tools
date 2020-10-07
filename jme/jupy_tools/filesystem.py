@@ -1,8 +1,27 @@
+"""
+FileSystem related utilities:
+
+ find(path, filters=None):
+    recursively returns every file in path that passes given filters
+    filters is a list of callables that return True/False based on a path
+
+ glob_wildcards(template, constraints=None):
+    finds all paths that match given template
+    yields path, wildcards pairs where wildcards is a dict of the values that will furn the template into path using template.format(**wildcards)
+
+    example:
+        > for path, wildcards in filesystem.glob_wildcards('tests/{mod}_test.py'):
+        -     print(f"mod={wildcards['mod']}: {path}")
+        mod=fs: tests/fs_test.py
+        mod=cdhit: tests/cdhit_test.py
+        mod=utils: tests/utils_test.py
+
+"""
+
 import os, re, glob
 from collections import namedtuple
 
-
-def find(path, filters=[]):
+def find(path, filters=None):
     """ recursively find files that match executable filters """
     for root, dirs, files in os.walk(path, topdown=False):
         for name in files:
@@ -19,11 +38,18 @@ def find(path, filters=[]):
         for name in skips:
             dirs.remove(name)
 
+def get_rexp_filter(rexp):
+    if isinstance(rexp, str):
+        rexp = re.compile(rexp)
+    def check_path_against_rexp(root, name):
+        return rexp.search(os.path.join(root, name)) is not None
+    return check_path_against_rexp
 
-def _check_path(root, name, filters=[]):
-    for test in filters:
-        if not test(root, name):
-            return False
+def _check_path(root, name, filters=None):
+    if filters:
+        for test in filters:
+            if not test(root, name):
+                return False
     return True
 
 

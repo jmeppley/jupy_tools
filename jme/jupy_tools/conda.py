@@ -1,5 +1,20 @@
 """
-methods for invoking conda on tyr
+methods for invoking conda from a notebook
+
+simply importing this module updates os.environ['PATH'] to include the current conda env's bin dir.
+
+    from jme.jupy_tools import conda
+
+to switch environments (adjusting sys.path and os.environ['PATH'] use conda.activate
+
+    conda.activate('base')
+
+The argument can be an environment name or path, just as with the command line
+
+to revert, use deactivate:
+
+    conda.deactivate()
+
 """
 # remove anything conda or jupyter related from the path, and add conda from my lysine folder
 #  then save to the kernel's env

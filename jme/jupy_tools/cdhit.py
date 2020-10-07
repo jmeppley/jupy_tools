@@ -1,13 +1,27 @@
 import re
+from collections import namedtuple
 
+CdhitClusters = namedtuple('CdhitClusters', 
+                           ['clusters',
+                            'reps',
+                            'lookup'])
 
 def parse_cdhit_clusters(cluster_file):
     """
-    Parses cdhit output into three objects:
+    Parses cdhit output into three collections in a named tuple:
       clusters: list of lists of gene ids.
-      cluster_reps: list of representative gene for each cluster
-      cluster_lookup: map from gene names to cluster index
+      reps: list of representative gene for each cluster
+      lookup: dict mapping from gene names to cluster index
+
+    In this setup, cluster ids are the position in either of the
+     first two lists.
     """
+
+    # re-call with file-like object if we are give an path
+    if isinstance(cluster_file, str):
+        with open(cluster_file) as cluster_handle:
+            return parse_cdhit_clusters(cluster_handle)
+
     # initialize final containers
     clusters = []
     cluster_reps = []
@@ -16,22 +30,22 @@ def parse_cdhit_clusters(cluster_file):
     gene_expr = re.compile(r"\s>(\S+)\.\.\.\s\s*(.+)\s*$")
 
     # loop over lines
-    with open(cluster_file) as C:
-        for line in C:
-            if line.startswith(">"):
-                # create a new cluster
-                cluster = []
-                cluster_id = len(clusters)
-                clusters.append(cluster)
-                continue
-            # parse gene name from line
-            gene, alignment = gene_expr.search(line).groups()
-            if alignment.strip() == "*":
-                cluster_reps.append(gene)
-            cluster_lookup[gene] = cluster_id
-            cluster.append(gene)
+    for line in cluster_file:
+        if line.startswith(">"):
+            # create a new cluster
+            cluster = []
+            cluster_id = len(clusters)
+            clusters.append(cluster)
+            continue
+        # parse gene name from line
+        gene, alignment = gene_expr.search(line).groups()
+        if alignment.strip() == "*":
+            cluster_reps.append(gene)
+        cluster_lookup[gene] = cluster_id
+        cluster.append(gene)
+
     # done
-    return clusters, cluster_reps, cluster_lookup
+    return CdhitClusters(clusters, cluster_reps, cluster_lookup)
 
 
 def parse_multiple_clusters(cluster_files):
