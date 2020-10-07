@@ -1,0 +1,9 @@
+channels:
+ - conda-forge
+ - bioconda
+ - jmeppley
+dependencies:
+ - pandas
+ - matplotlib
+ - py-metagenomics
+ - nose
