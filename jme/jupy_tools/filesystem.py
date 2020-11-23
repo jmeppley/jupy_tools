@@ -1,25 +1,36 @@
 """
 FileSystem related utilities:
 
- find(path, filters=None):
-    recursively returns every file in path that passes given filters
-    filters is a list of callables that return True/False based on a path
+  find(path, filters=None):
+     recursively returns every file in path that passes given filters
+     filters is a list of callables that return True/False based on a path
 
- glob_wildcards(template, constraints=None):
-    finds all paths that match given template
-    yields path, wildcards pairs where wildcards is a dict of the values that will furn the template into path using template.format(**wildcards)
+  glob_wildcards(template, constraints=None):
+     finds all paths that match given template
+     yields (path, wildcards) pairs
+        where wildcards is a dict of the values that will furn the template into path
+        using template.format(**wildcards)
 
-    example:
+     example:
         > for path, wildcards in filesystem.glob_wildcards('tests/{mod}_test.py'):
         -     print(f"mod={wildcards['mod']}: {path}")
         mod=fs: tests/fs_test.py
         mod=cdhit: tests/cdhit_test.py
         mod=utils: tests/utils_test.py
 
+  human_readable_bytes(byt):
+      return a string like 5.6G or 1.0K or 45T given a number of bytes
+
+  get_file_sizes_and_dates_by_uid(volume, users=None, min_age=0, follow_links=False):
+      walk a directory tree to catalog contents by size/date/user
+
+  get_file_size_table(usage_data, min_date):
+      aggregate total file sizes by date and user
 """
 
-import os, re, glob
-from collections import namedtuple
+import os, re, glob, pandas, numpy
+from datetime import datetime
+from collections import namedtuple, defaultdict
 
 def find(path, filters=None):
     """ recursively find files that match executable filters """
@@ -128,3 +139,114 @@ def human_readable_bytes(byt):
         illion = (magnitude + 1) // 3
     format_str = float_fmt + ["", "K", "M", "G", "T", "P", "E"][illion]
     return (format_str % (byt * 1.0 / (1024 ** illion))).lstrip("0")
+
+
+def get_file_sizes_and_dates_by_uid(volume, users=None, min_age=0, follow_links=False, ctime=False):
+    """ Collect date and size by user id """
+
+    # translate user ids to names
+    userid_map = get_user_lookup_table().to_dict()
+
+    # translate userids to names in include list
+    if users is not None:
+        users = set(userid_map.get(u, u) for u in users)
+
+    usage_data = defaultdict(lambda: [])
+    min_date = int(datetime.now().timestamp())
+    now = datetime.now().timestamp()
+    for root_path, folder_list, file_list in os.walk(volume, followlinks=follow_links):
+        for file_name in file_list:
+            try:
+                file_path = os.path.join(root_path, file_name)
+                if not(os.path.isfile(file_path)):
+                    # skip broken links
+                    continue
+                file_stats = os.stat(file_path)
+
+                # filter by owner if user list given
+                ownerid = file_stats.st_uid
+                owner = userid_map.get(ownerid, ownerid)
+                if users is not None and owner not in users:
+                    continue
+
+                mtime = file_stats.st_ctime if ctime else max(file_stats.st_mtime, file_stats.st_ctime)
+                # keep track of oldest file
+                min_date = min(mtime, min_date)
+                # filter by age
+                file_age = now - mtime
+                if file_age < min_age:
+                    continue
+                usage_data[owner].append((file_stats.st_size,
+                                          mtime,
+                                          file_path,
+                                         ))
+            except:
+                pass
+
+    return usage_data, min_date
+
+
+TIME_SPANS = {
+    'minutes': 60,
+    'hours': 3600,
+    'days': 3600*24,
+    'weeks': 3600*24*7,
+    'months': 3600*24*30,
+}
+
+def get_file_size_table(usage_data, min_date,
+                        age_bin_size=2,
+                        age_bin_type='weeks', min_age=0):
+    """ translate files sizes and dates into table """
+
+    now = datetime.now().timestamp()
+    if age_bin_type not in TIME_SPANS:
+        raise Exception("I don't know the time span {}. Please specify one of: {}".format(
+            age_bin_type,
+            ", ".join(TIME_SPANS.keys()),
+        ))
+
+    age_bins_step = age_bin_size * TIME_SPANS[age_bin_type]
+    oldest_age = now - min_date
+    age_bin_bounds = numpy.arange(0, oldest_age + age_bins_step, age_bins_step)
+    
+    counts = {}
+    now = datetime.now().timestamp()
+    for owner, file_data_list in usage_data.items():
+        owner_counts = counts.setdefault(owner, {})
+        for file_data in file_data_list:
+            size = file_data[0]
+            file_age = now - file_data[1]
+            if file_age < min_age:
+                continue
+            age_bin = int(file_age/age_bins_step)
+            owner_counts[age_bin] = owner_counts.get(age_bin, 0) + size
+            
+    
+    # make into a data frame
+    file_size_table = pandas.DataFrame(counts)
+    # headers...
+    #users = get_user_lookup_table()
+    #file_size_table.columns = [users.get(c,c) for c in file_size_table.columns]
+    
+    file_size_table.index = \
+            [get_bin_bounds_string(i, 
+                                   age_bin_bounds, 
+                                   lambda b: \
+                                       str(int(b/TIME_SPANS[age_bin_type])), 
+                                   "{} old".format(age_bin_type)) \
+             for i in file_size_table.index]
+    return file_size_table    
+    
+
+def get_bin_bounds_string(bin_index, bin_bounds, to_str=repr, suffix=""):
+    """ retuns, for example: '15 to 20 months' given:
+      bin_index: the location in bin_bounds to find the start value
+      bin_bounds: a list of bounding values
+      suffix: the class of the bounds. EG 'months' or 'days'
+    """
+    return "{} to {} {}".format(to_str(bin_bounds[bin_index]), to_str(bin_bounds[bin_index + 1]), suffix)
+
+def get_user_lookup_table():
+    """ returns series mapping user id to user name """
+    return pandas.read_table('/etc/passwd', sep=':', names=['user','code','id','group','home','shell'], index_col=2)['user']
