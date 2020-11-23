@@ -9,6 +9,7 @@ from jme.jupy_tools.utils import get_best_fit, parse_blast_m8, BLAST, BLAST_PLUS
 
 FFT = 'fft'
 CLUST = 'cluster'
+JB = 'jb'
 
 def dotplot(qhits, ax=None, subplots_kws=None, seq_length=None):
     if ax is None:
@@ -128,7 +129,7 @@ def find_cmer_stats_fft(
 
     # use FFT to get dominat freq of KDE distrobution
     signal = Z - Z.mean()
-    freq = numpy.linspace(0.0, 0.5 / dx, resolution / 2)
+    freq = numpy.linspace(0.0, 0.5 / dx, int(resolution / 2))
     signalFFT = fftpack.fft(signal) / resolution
     signalFFT = abs(signalFFT[: resolution // 2])
     peak_index = abs(signalFFT).argmax()
@@ -168,8 +169,8 @@ def find_cmer_stats_clust(
     # if we get here, caclulate repeat size
 
     # get seq length
-    qlen = seq_length if seq_length else qhits.qend.values.max()
-
+    qlen = get_seq_length(qhits, seq_length)
+    
     # transform matches to group by position in the dotplot
     ranks = get_ranks(qhits).values
 
@@ -210,6 +211,31 @@ def find_cmer_stats_clust(
 
     return repeat_size
 
+
+def find_cmer_stats_jb(qhits, seq_length=None, hit_cutoff=3000):
+    """ John B's quick method """
+    qlen = get_seq_length(qhits, seq_length)
+    
+    # filter and sort
+    qhits = qhits.query(f"mlen >= .9 * {hit_cutoff}") \
+                 .sort_values('qstart')
+    
+    # need at least 3 hits
+    if qhits.shape[0] > 2:
+        
+        # find median of difference of sorted hit starts
+        starts = qhits.qstart.values
+        diffs = [starts[i+1] - starts[i] for i in range(len(starts) - 1)]
+        repeat_size = np.median(diffs)
+        return repeat_size
+    
+def get_seq_length(qhits, seq_length):
+    if seq_length is not None:
+        return seq_length
+    if 'qlen' in qhits.columns:
+        return next(iter(qhits.qlen.values))
+    else:
+        return qhits.qend.values.max()
 
 def make_presence_array(hit_range, size):
     start, end = sorted(hit_range)
@@ -298,7 +324,7 @@ def build_all_v_all_cmer_table(hit_table, cmer_table_out=None,
             float(): results where score >= float value
             **kwargs are assed to get_qhits()
     """
-    print(f"running {method} on {hit_table} and saving to {cmer_table_out}")
+    print(f"running {method} on {repr(hit_table)[:100]} and saving to {cmer_table_out}")
     
     if not isinstance(hit_table, pandas.DataFrame):
         # should be a dataframe or m8 file
@@ -343,9 +369,11 @@ def check_cmer(qhits, method=FFT, qh_cutoff=750, **kwargs):
         qhits = get_qhits(qhits, mlen_cutoff=qh_cutoff, **kwargs)
 
     qlen = qhits.mlen.max()
-    if method == FFT:
+    if method.lower() == FFT:
         repeat_size = find_cmer_stats_fft(qhits)
-    elif method == CLUST:
+    elif method.upper() == CLUST:
+        repeat_size = find_cmer_stats_clust(qhits)
+    elif method.lower() == JB:
         repeat_size = find_cmer_stats_clust(qhits)
     else:
         raise Exception("Unkown cmer method: " + method)
@@ -390,7 +418,7 @@ def main():
 
     function = cl_args.pop(0)
     if not re.match(r'^\w+$', function, flags=re.A):
-        raise Excpetion("Function name can only contain word characters (a-zA-Z0-9_)")
+        raise Exception("Function name can only contain word characters (a-zA-Z0-9_)")
 
     try:
         fn = eval(function)
