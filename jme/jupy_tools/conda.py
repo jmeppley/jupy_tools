@@ -1,5 +1,5 @@
 """
-methods for invoking conda from a notebook
+methods for using conda envs from a notebook
 
 simply importing this module updates os.environ['PATH'] to include the current conda env's bin dir.
 
@@ -14,6 +14,11 @@ The argument can be an environment name or path, just as with the command line
 to revert, use deactivate:
 
     conda.deactivate()
+    
+Notes:
+
+ * this module remembers all the past activate() calls and deactivate() steps back through them
+ * activate(env) does not change the python module path by default, but it can (see docs)
 
 """
 # remove anything conda or jupyter related from the path, and add conda from my lysine folder
@@ -44,10 +49,27 @@ def list_envs():
     return list(ENVS)
 
 
-def activate(env=None):
+def activate(env=None, set_python_path=False, set_shell_path=True):
+    """
+    This "activates" a requested conda environment. By default, the activation
+    is only partial and only affects the shell's PATH environment variable
+    (for more see set_python_path and set_shell_path params below).
+    
+    This let's you easily access command line programs from other conda environments.
+    
+    params:
+     * env: the name or path of a conda environment. As of now, names are not perfectly
+       supported. Absolute paths should always work.
+     * set_python_path: by default, pythons sys.path is NOT modified. To modify sys.path
+       to be able to load python modules from this env, pass set_python_path=True.
+       (This can cause problems, particularly if you switch envs frequently)
+     * set_shell_path: by default, the os.environ[PATH] is updated to include the env's
+       bin folder. Set this to False to leave the PATH unchanged.
+    
+    """
     current_env = {"path": os.environ["PATH"], "pypath": sys.path}
 
-    # update PATH
+    # get the env location
     if env != None:
         try:
             # is it a named env?
@@ -56,31 +78,36 @@ def activate(env=None):
             if not os.path.isdir(f"{env}/bin"):
                 # if it's a path, it must have a bin dir
                 raise Exception(f"Cannot find env: {env}")
+        # add notebook's base dir as a fall back for shell PATH
         env_dirs = [env, CONDA_BASE_DIR]
     else:
+        # use the notebook's env
         env_dirs = [CONDA_BASE_DIR]
 
-    # add /bin to end of env dirs
-    env_dirs = [d + "/bin" for d in env_dirs]
+    # add /bin to end of env dirs (and use aboslute paths)
+    env_dirs = [os.path.abspath(d) + "/bin" for d in env_dirs]
 
-    # set new PATH
-    os.environ["PATH"] = ":".join(env_dirs + NON_CONDA_PATH)
+    # update os.environ PATH (prepend env's bin dir)
+    if set_shell_path:
+        os.environ["PATH"] = ":".join(env_dirs + NON_CONDA_PATH)
 
-    # update sys.path
-    if env is None:
-        sys.path = ORIG_PATH
-    else:
-        # get sys.path from Python executable
-        cmd = 'python -c "import sys; print(sys.path)"'
-        sys.path = eval(subprocess.check_output(cmd, shell=True))
-        # add path to this module
-        sys.path.append(MODULE_PATH)
+    # update python's sys.path
+    if set_python_path: 
+        if env is None:
+            sys.path = ORIG_PATH
+        else:
+            # get sys.path from env's Python executable
+            cmd = env_dirs[0] + '/python -c "import sys; print(sys.path)"'
+            sys.path = eval(subprocess.check_output(cmd, shell=True))
+            # add path to this module
+            sys.path.append(MODULE_PATH)
 
     # save previous state
     PREVIOUS_ENVS.append(current_env)
 
 
 def deactivate():
+    """ revert to previous state of sys.path and os.environ[PATH] """
     prev_env = PREVIOUS_ENVS.pop(-1)
     os.environ["PATH"] = prev_env["path"]
     sys.path = prev_env["pypath"]
