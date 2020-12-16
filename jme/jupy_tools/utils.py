@@ -1,6 +1,7 @@
 import logging
 import numpy
 import pandas
+import re
 
 BLAST_COLUMNS = [
         "query",
@@ -27,11 +28,42 @@ BLAST = 'BlastTab'.upper()
 BLAST_PLUS = 'BlastTab+'.upper()
 PAF = 'Paf'.upper()
 PAF_ALL = 'Paf+'.upper()
+LASTAL = 'lastal'.upper()
+LASTAL_COLUMNS = ['score',
+                  'hit', 'hstart', 'hmlen', 'hstrand', 'hlen',
+                  'query', 'qstart', 'qmlen', 'qstrand', 'qlen',
+                  'match_string', 'eg2', 'e']
+
+
 HIT_TABLE_COLUMNS = {BLAST: BLAST_COLUMNS,
                      BLAST_PLUS: BLAST_PLUS_COLUMNS,
                      PAF: PAF_COLUMNS,
-                     PAF_ALL: PAF_COLUMNS + ['tp','cm','dv','rl']
+                     PAF_ALL: PAF_COLUMNS + ['tp','cm','dv','rl'],
+                     LASTAL: LASTAL_COLUMNS,
                     }
+
+def computeLastHitValues(blocks):
+    """
+    given the query length and 'blocks' string from a last hit
+    return the:
+        match length
+
+    the blocks string looks something like this:
+        "73,0:1,15,0:1,13,0:1,9"
+        where integer elements indicate lenghts of matches and
+        colon separated elements indicate lengths of gaps
+    """
+    matchLen = 0
+    for segment in blocks.split(','):
+        try:
+            matchLen += int(segment)
+        except ValueError:
+            (hml, qml) = segment.split(":")
+            mml = max(int(hml), int(qml))
+            matchLen += mml
+
+    return matchLen
+
 
 def parse_blast_m8(hit_table, format=BLAST, skiprows=0, **cutoffs):
     """ utility for quickly loading a hit table into pandas 
@@ -51,6 +83,16 @@ def parse_blast_m8(hit_table, format=BLAST, skiprows=0, **cutoffs):
         )
     
     # format specific tweaks
+    if format == LASTAL:
+        hits['qsmult'] = [1 if qs == '+' else -1 
+                          for qs in hits.qstrand]
+        hits = \
+            hits.eval('hend = hstart + hmlen - 1') \
+                .eval('qend = qstart + ((qmlen - 1) * qsmult)')
+        hits['mlen'] = [computeLastHitValues(blocks)
+                        for blocks in hits.match_string]
+        hits['evalue'] = [float(re.sub('E=','',str(e)))
+                          for e in hits['e']]
     if format in [PAF, PAF_ALL]:
         # calculate pctid
         hits = hits.eval('pctid = 100 * matches / mlen')
