@@ -11,7 +11,7 @@ Generate a SQLite databse linking annotations,genes,contigs, and samples
 and provide methods to query this database.
 """
 
-import re, sqlite3, pandas
+import re, sqlite3, pandas, os
 from pypika import Query, Table, functions as sql_fn
 from pypika.queries import QueryBuilder
 from pypika.enums import JoinType
@@ -27,19 +27,30 @@ class MGCBrowser():
     def __init__(self, sqlite_file):
         self.connection = sqlite3.connect(sqlite_file)
         self.query = partial(pandas.read_sql_query, con=self.connection)
-        
+
     def get_annots_sql(self, **kwargs):
-    """
-    what: one of:
-        column to return 
-        list of columns to return
-        "*"
-        None (default): return columns used as keys
-        
-    EG:
-        get_genes_sql(what="gene", EGGNOG=eggnog, order='Nitrososphaerales')
-    """
-        return self.query(get_annots_where(**kwargs))
+        """
+        what: one of:
+            column to return 
+            list of columns to return
+            "*"
+            None (default): return columns used as keys
+
+        """
+        return self.query(get_annots_sql(**kwargs))
+
+    def get_genes_sql(self, **kwargs):
+        """
+        EG:
+            get_genes_sql(what="gene", EGGNOG=eggnog, order='Nitrososphaerales')
+        """
+        return self.query(get_genes_sql(**kwargs))
+
+    def get_genes_by_contigs(self, **kwargs):
+        return self.query(get_genes_by_contigs(**kwargs))
+    
+    def get_contigs_sql(self, **kwargs):
+        return self.query(get_contigs_sql(**kwargs))
 
 
 def get_annots_sql(what=None, count=False, join=None, as_str=True, **kwargs):
@@ -66,20 +77,32 @@ def get_genes_sql(what="*", count=False, as_str=True, join=None, include_annots=
     """
     Returns genes matching any combination of criteria. 
     """
-    contig_args, gene_args = split_args(kwargs, CONTIG_DATA)
-    gene_args, annot_args = split_args(gene_args, GENE_DATA)
+    
+    # check filter args for other tables
+    gene_args, other_args = split_args(kwargs, GENE_DATA)
+    contig_args, annot_args = split_args(other_args, CONTIG_DATA)
+    
+    # check what for other tables
+    if what != "*":
+        if isinstance(what, (str, Field)):
+            what = [what,]
+        gene_what, other_what = split_list(what, GENE_DATA)
+        contig_what, annot_what = split_list(other_what, CONTIG_DATA)
+        fam_what, tax_what = split_list(annot_what, FAM_DATA)
+    else:
+        annot_what, contig_what = [], []
     
     wheres = []
-    columns = []
+    query_columns = []
     joins = {}
 
     if len(annot_args) > 0:
-        where, columns = get_annots_where(join, **annot_args)
+        where, cols = get_annots_where(join, **annot_args)
         wheres.append(where)
-        columns.append(columns)
+        query_columns.extend(cols)
         joins[FAM_TABLE] = GENE_TABLE.cluster_rep == FAM_TABLE.gene
         joins[TAX_TABLE] = GENE_TABLE.cluster_rep == TAX_TABLE.gene
-    elif include_annots:
+    elif include_annots or len(annot_what) > 0:
         if include_annots == "only":
             joins[FAM_TABLE] = GENE_TABLE.cluster_rep == FAM_TABLE.gene
             joins[TAX_TABLE] = GENE_TABLE.cluster_rep == TAX_TABLE.gene
@@ -89,15 +112,24 @@ def get_genes_sql(what="*", count=False, as_str=True, join=None, include_annots=
             joins[TAX_TABLE] = (GENE_TABLE.cluster_rep == TAX_TABLE.gene, JoinType.left)
 
     if len(contig_args) > 0:
-        where, columns = build_where(ContigFilter, **contig_args)
+        where, cols = build_where(ContigFilter, **contig_args)
         wheres.append(where)
-        columns.append(columns)
+        query_columns.extend(cols)
+        joins[CONTIG_TABLE] = GENE_TABLE.contig == CONTIG_TABLE.contig
+    elif len(contig_what) > 0:
         joins[CONTIG_TABLE] = GENE_TABLE.contig == CONTIG_TABLE.contig
 
     if len(gene_args) > 0:
-        where, columns = build_where(GeneFilter, **gene_args)
+        where, cols = build_where(GeneFilter, **gene_args)
         wheres.append(where)
-        columns.append(columns)
+        query_columns.extend(cols)
+        
+    if what != "*":
+        what = []
+        for table, columns in zip([GENE_TABLE, CONTIG_TABLE, TAX_TABLE, FAM_TABLE],
+                                  [gene_what, contig_what, tax_what, fam_what]):
+            what += [table.field(c) for c in columns]
+        what += query_columns
         
     return get_sql(GENE_TABLE, 
                    what, 
@@ -168,7 +200,7 @@ def get_contigs_sql(what="*", count=False, as_str=True, join=None, **kwargs):
 # Support functions and classes
 
 def get_annots_where(join=None, **kwargs):
-    fam_args, tax_args = split_args(kwargs, FAMS)
+    fam_args, tax_args = split_args(kwargs, FAM_DATA)
         
     if len(kwargs) == 0:
         raise Exception("Please suppl some criteria to filter genes")
@@ -272,8 +304,8 @@ class TaxFilter(Filter):
         super().__init__(taxon, how)
 
 FAM_TABLE = Table('gene_families')
-FAMS = ['COG', 'EGGNOG', 'KEGG', 'PFAM', 'TIGRFAM']
-FAM_COLS = {r:eval("FAM_TABLE.{}".format(r)) for r in FAMS}
+FAM_DATA = ['COG', 'EGGNOG', 'KEGG', 'PFAM', 'TIGRFAM']
+FAM_COLS = {r:eval("FAM_TABLE.{}".format(r)) for r in FAM_DATA}
 class FamFilter(Filter):
     table = FAM_TABLE
     def __init__(self, family, label, how=None):
@@ -281,8 +313,8 @@ class FamFilter(Filter):
         super().__init__(label, how)
 
 CONTIG_TABLE = Table('contig_data')
-CONTIG_DATA = ['length', 'coverage', 'gc','gene_count']
-CONTIG_COLS = {c:eval("CONTIG_TABLE.{}".format(c)) for c in CONTIG_DATA}
+CONTIG_DATA = ['contig', 'length', 'coverage', 'gc','gene_count']
+CONTIG_COLS = {c:CONTIG_TABLE.field(c) for c in CONTIG_DATA}
 class ContigFilter(Filter):
     table = CONTIG_TABLE
     def __init__(self, data, value, how=None):
@@ -290,8 +322,8 @@ class ContigFilter(Filter):
         super().__init__(value, how)
         
 GENE_TABLE = Table('gene_data')
-GENE_DATA = ['contig', 'cluster_rep', 'gc','contig_start', 'contig_end', 'frame']
-GENE_COLS = {c:eval("GENE_TABLE.{}".format(c)) for c in GENE_DATA}
+GENE_DATA = ['gene', 'contig', 'cluster_rep', 'gc','contig_start', 'contig_end', 'frame']
+GENE_COLS = {c:GENE_TABLE.field(c) for c in GENE_DATA}
 class GeneFilter(Filter):
     table = GENE_TABLE
     def __init__(self, data, value, how=None):
@@ -363,7 +395,7 @@ def get_sql(table, what="*", where=None,
     query = query.select(*what)
 
     # filter if where is not None
-    if where is not None:
+    if where is not None and len(where) > 0:
         if isinstance(where, (tuple, list)):
             # put wheres together, usually with AND
             where = reduce(_get_join_fn(join), where)
@@ -392,6 +424,16 @@ def split_args(kwargs, keep_keys):
         else:
             other_args[key] = value
     return matched_args, other_args
+
+def split_list(items, keep):
+    matched, other = [], []
+    keep = set(keep)
+    for item in items:
+        if item in keep:
+            matched.append(item)
+        else:
+            other.append(item)
+    return matched, other
 
 
 ##########################
