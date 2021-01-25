@@ -371,7 +371,7 @@ def check_cmer(qhits, method=FFT, qh_cutoff=750, **kwargs):
     qlen = qhits.mlen.max()
     if method.lower() == FFT:
         repeat_size = find_cmer_stats_fft(qhits)
-    elif method.upper() == CLUST:
+    elif method.lower() == CLUST:
         repeat_size = find_cmer_stats_clust(qhits)
     elif method.lower() == JB:
         repeat_size = find_cmer_stats_clust(qhits)
