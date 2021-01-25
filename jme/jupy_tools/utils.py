@@ -133,6 +133,41 @@ def _get_print_func(logger, level):
 
 
 class LogLogger:
+    """
+    Class to help logging potentially long running processes
+    
+    It prints a message with reduced frequency in a loop so that
+    the early iterations get logged, but the terminal doesn't
+    get overwhelmed as the iteration progresses.
+    
+    If you use the old style formatting (using % as with the python logger)
+    then fomratting is only performed when the message is printed.
+    
+        > loglogger = LogLogger(multiplier=2)
+        > for x in range(int(1e6)):
+        >    loglogger.log("iteration: %s", (x,))
+        iteration: 0
+        iteration: 1
+        iteration: 3
+        iteration: 7
+        iteration: 15
+        iteration: 31
+        iteration: 63
+        iteration: 127
+        iteration: 255
+        iteration: 511
+        iteration: 1023
+        iteration: 2047
+        iteration: 4095
+        iteration: 8191
+        iteration: 16383
+        iteration: 32767
+        iteration: 65535
+        iteration: 131071
+        iteration: 262143
+        iteration: 524287
+    
+    """
     def __init__(
         self, multiplier=2, start=0, first_trigger=1, logger=None, level=logging.INFO
     ):
