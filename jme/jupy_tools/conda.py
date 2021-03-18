@@ -44,10 +44,13 @@ ORIG_PATH = sys.path
 PREVIOUS_ENVS = []
 MODULE_PATH = os.path.dirname(os.path.abspath(__file__))
 
+active_env = None
 
 def list_envs():
     return list(ENVS)
 
+def get_active_env():
+    return active_env
 
 def activate(env=None, set_python_path=False, set_shell_path=True):
     """
@@ -67,7 +70,8 @@ def activate(env=None, set_python_path=False, set_shell_path=True):
        bin folder. Set this to False to leave the PATH unchanged.
     
     """
-    current_env = {"path": os.environ["PATH"], "pypath": sys.path}
+    global active_env
+    current_env = {"env": active_env, "path": os.environ["PATH"], "pypath": sys.path}
 
     # get the env location
     if env != None:
@@ -83,6 +87,9 @@ def activate(env=None, set_python_path=False, set_shell_path=True):
     else:
         # use the notebook's env
         env_dirs = [CONDA_BASE_DIR]
+    
+    # save env path to global var
+    active_env = env
 
     # add /bin to end of env dirs (and use aboslute paths)
     env_dirs = [os.path.abspath(d) + "/bin" for d in env_dirs]
