@@ -1,7 +1,9 @@
 import logging
+import io
 import numpy
 import pandas
 import re
+import subprocess
 
 BLAST_COLUMNS = [
         "query",
@@ -210,3 +212,52 @@ def get_best_fit(xd, yd, force_intercept=False, force_slope=False):
         coeffs = numpy.polyfit(xd, yd, 1)
 
     return coeffs
+
+def iterable_to_stream(iterable, str_to_bytes=True, buffer_size=io.DEFAULT_BUFFER_SIZE):
+    """
+    Lets you use an iterable (e.g. a generator) that yields bytestrings as a read-only
+    input stream.
+
+    The stream implements Python 3's newer I/O API (available in Python 2's io module).
+    For efficiency, the stream is buffered.
+    
+    src: https://stackoverflow.com/a/20260030/663466
+    """
+    
+    if str_to_bytes:
+        # encode strings as bytes
+        iterable = (s.encode('utf-8') for s in iterable)
+
+    class IterStream(io.RawIOBase):
+        def __init__(self):
+            self.leftover = None
+        def readable(self):
+            return True
+        def readinto(self, b):
+            try:
+                l = len(b)  # We're supposed to return at most this much
+                chunk = self.leftover or next(iterable)
+                output, self.leftover = chunk[:l], chunk[l:]
+                b[:len(output)] = output
+                return len(output)
+            except StopIteration:
+                return 0    # indicate EOF
+    return io.BufferedReader(IterStream(), buffer_size=buffer_size)
+
+def get_dataframe_from_cmd(command, shell=True, sep='\t', **kwargs):
+    """ 
+    Returns a pandas dataframe from a shell command that returns text in tabular format.
+    
+    params:
+        command: the command to capture the output of
+        shell: use subprocess shell mode (unsecure!) (default: True)
+        sep: table delimirer (default: tab) 
+        **kwargs: passed to pandas.read_csv
+        
+    Ideally , this would get a generator over the output lines and buffer it, but
+        it's simple to just ge tthe whole output with run()"""
+    
+    p = subprocess.run(command, shell=shell, capture_output=True)
+    return pandas.read_csv(io.BytesIO(p.stdout),
+                           sep=sep, 
+                           **kwargs)
