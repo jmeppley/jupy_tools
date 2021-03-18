@@ -53,6 +53,19 @@ def parse_contig_hits(map_file, format=blastm8.SAM, **kwargs):
             contig_hits.setdefault(contig, {})[read] = chits
     return contig_hits
 
+def contig_hits_from_table(hits, contig_col='hit', read_col='query'):
+    """
+    A kludge to get tabular hits (from util.parse_blast_m8) into
+    the proper format for the plot functions. Only tested with PAF
+    """
+    hit_dict = {} 
+    for contig, c_hits in hits.groupby(contig_col):
+        contig_hits = hit_dict.setdefault(contig, {})
+        for query, q_hits in c_hits.groupby(read_col):
+            hit_list = contig_hits.setdefault(query, [])
+            for i, row in q_hits.iterrows():
+                hit_list.append(row)
+    return hit_dict
 
 def hits_intersect(h1, h2):
     return h1.hstart <= h2.hend and h2.hstart <= h1.hend
