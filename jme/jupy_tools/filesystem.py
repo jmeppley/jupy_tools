@@ -95,7 +95,7 @@ def glob_wildcards(template, constraints=None, as_tuple=False):
 
     # regex for getting wildcards from path
     wildcard_rexp = re.compile(TEMPLATE_REXP.sub(wc_repl, _hide_dots(template)))
-
+    
     # create named tuple class for returned data
     if as_tuple:
         Wildcards = namedtuple(
