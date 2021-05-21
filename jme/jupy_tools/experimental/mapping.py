@@ -20,7 +20,7 @@ import logging
 SAMTOOLS_CMD_TEMPLATE = """samtools view -F 2308 {sam_file}"""
 
 
-def parse_deltas(sam_file, samtools_cmd_template=SAMTOOLS_CMD_TEMPLATE, **kwargs):
+def parse_deltas_from_sam(sam_file, samtools_cmd_template=SAMTOOLS_CMD_TEMPLATE, **kwargs):
     """
     Parse a SAM file into a collection of coverage deltas by reference sequences
     
@@ -29,22 +29,31 @@ def parse_deltas(sam_file, samtools_cmd_template=SAMTOOLS_CMD_TEMPLATE, **kwargs
     then hits are parsed with any kwargs sent to blastm8.FilterParams()
     """
     samtools_cmd = samtools_cmd_template.format(sam_file=sam_file)
+    with subprocess.Popen(samtools_cmd, shell=True, stdout=subprocess.PIPE,) as process:
+        string_lines = (l.decode() for l in iter(process.stdout))
+        return parse_deltas(string_lines, format=blastm8.SAM, **kwargs)
+    
+def parse_deltas(hit_table, portion=False, zero_indexed=False, **kwargs):
+    """ parses hit table into coverage deltas.
+        
+        kwargs passed  blastm8.generate_hits()"""
 
     # dict of dicts of counts
     deltas_by_ref = defaultdict(lambda: defaultdict(int))
     read_count, hit_count = 0, 0
-    with subprocess.Popen(samtools_cmd, shell=True, stdout=subprocess.PIPE,) as process:
-        string_lines = (l.decode() for l in iter(process.stdout))
-        for read, hits in blastm8.generate_hits(
-            string_lines, format=blastm8.SAM, **kwargs
-        ):
-            read_count += 1
-            for hit in hits:
-                hit_count += 1
-                start, end = sorted((hit.hstart, hit.hend))
-                deltas = deltas_by_ref[hit.hit]
-                deltas[start] += 1
-                deltas[end + 1] -= 1
+    for read, hits in blastm8.generate_hits(
+        hit_table, **kwargs
+    ):
+        read_count += 1
+        factor = 1 / len(hits) if portion else 1
+        for hit in hits:
+            hit_count += 1
+            start, end = sorted((hit.hstart, hit.hend))
+            if zero_indexed:
+                start, end = start+1, end+1
+            deltas = deltas_by_ref[hit.hit]
+            deltas[start] += factor
+            deltas[end + 1] -= factor
 
     logging.debug(
         "parsed deltas for %d contigs from %d reads and %d hits",

@@ -3,11 +3,35 @@ import io
 import numpy
 import pandas
 import subprocess
+from  Bio import SeqIO
 
 def first(S):
     """ Simply return the first item from a collection (using next(iter(S))) """
     return next(iter(S))
 
+def read_tsv(tsv_file, **kwargs):
+    kwargs.setdefault('sep', '\t')
+    kwargs.setdefault('index_col', 0)
+    return pandas.read_csv(tsv_file, **kwargs)
+
+def dotplot(qhits, ax=None, subplots_kws=None, seq_length=None):
+    """ generate a dotplot-like plot from the given hit table """
+    from matplotlib import pyplot as plt
+    if ax is None:
+        if subplots_kws is None:
+            subplots_kws = {}
+        subplots_kws.setdefault("figsize", [8, 8])
+        fig, ax = plt.subplots(1, 1, **subplots_kws)
+    if seq_length is None:
+        seq_length = qhits.mlen.max()
+
+    for i, hit in qhits.iterrows():
+        ax.plot(
+            [hit.qstart / seq_length, hit.qend / seq_length],
+            [hit.hstart / seq_length, hit.hend / seq_length],
+            color="black",
+            alpha=0.66,
+        )
 
 def _print(msg, format_variables):
     if format_variables is None:
@@ -161,3 +185,6 @@ def get_dataframe_from_cmd(command, shell=True, sep='\t', **kwargs):
     return pandas.read_csv(io.BytesIO(p.stdout),
                            sep=sep, 
                            **kwargs)
+
+def get_seq_lens(sequence_file, format='fasta'):
+    return {r.id:len(r) for r in SeqIO.parse(sequence_file, format=format)}
