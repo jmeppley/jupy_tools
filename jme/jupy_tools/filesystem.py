@@ -141,8 +141,16 @@ def human_readable_bytes(byt):
     return (format_str % (byt * 1.0 / (1024 ** illion))).lstrip("0")
 
 
-def get_file_sizes_and_dates_by_uid(volume, users=None, min_age=0, follow_links=False, ctime=False):
-    """ Collect date and size by user id """
+def get_file_sizes_and_dates_by_uid(volume, users=None, min_age=0, follow_links=False, time_stat='mtime'):
+    """ Collect date and size by user id 
+    
+    Params:
+    
+     * users: only consider these users (ids or names)
+     * min_age: only save files at least this old (in seconds)
+     * follow_links: passed to os.walk (default is False)
+     * time_stat: one of 'mtime', 'ctime', 'atime', or 'max'
+    """
 
     # translate user ids to names
     userid_map = get_user_lookup_table().to_dict()
@@ -169,7 +177,12 @@ def get_file_sizes_and_dates_by_uid(volume, users=None, min_age=0, follow_links=
                 if users is not None and owner not in users:
                     continue
 
-                mtime = file_stats.st_ctime if ctime else max(file_stats.st_mtime, file_stats.st_ctime)
+                # get the user selected time stat
+                mtime = file_stats.st_ctime if time_stat == 'ctime' \
+                    else file_stats.st_mtime if time_stat == 'mtime' \
+                    else file_stats.st_atime if time_stat == 'atime' \
+                    else max(file_stats.st_mtime, file_stats.st_ctime, file_stats.st_atime)
+                
                 # keep track of oldest file
                 min_date = min(mtime, min_date)
                 # filter by age
