@@ -68,7 +68,7 @@ def _check_path(root, name, filters=None):
 TEMPLATE_REXP = re.compile(r"(?<!{)\{\s*(\w+)\s*\}(?!})")
 
 
-def glob_wildcards(template, constraints=None, as_tuple=False):
+def glob_wildcards(template, constraints=None, as_tuple=False, debug=False):
     """ should work like the snakemake function:
           * given a template like path/{variable}.ext
           * find the values for variable that match files
@@ -87,19 +87,26 @@ def glob_wildcards(template, constraints=None, as_tuple=False):
     # simple glob for finding files {xxx} -> *
     glob_string = TEMPLATE_REXP.sub("*", template)
 
+    named_patterns = set()
     def wc_repl(match):
         """ replace {xxx} with named regex pattern using any constraints """
         wc_name = match.group(1)
+        if wc_name in named_patterns:
+            return f"(?P={wc_name})"
+        named_patterns.add(wc_name)
         wc_patt = constraints.get(wc_name, r".+")
         return f"(?P<{wc_name}>{wc_patt})"
 
     # regex for getting wildcards from path
-    wildcard_rexp = re.compile(TEMPLATE_REXP.sub(wc_repl, _hide_dots(template)))
+    wildcard_pattern = TEMPLATE_REXP.sub(wc_repl, _hide_dots(template))
+    if debug:
+        print(f"Wildcard regexp: '{wildcard_pattern}'")
+    wildcard_rexp = re.compile(wildcard_pattern)
     
     # create named tuple class for returned data
     if as_tuple:
         Wildcards = namedtuple(
-            "Wildcards", [m.group(1) for m in TEMPLATE_REXP.finditer(template)]
+            "Wildcards", list(set(m.group(1) for m in TEMPLATE_REXP.finditer(template)))
         )
 
     # loop over matched files
@@ -205,6 +212,7 @@ TIME_SPANS = {
     'days': 3600*24,
     'weeks': 3600*24*7,
     'months': 3600*24*30,
+    'years': 3600*24*365,
 }
 
 def get_file_size_table(usage_data, min_date,

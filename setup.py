@@ -1,4 +1,4 @@
-from jme.jupy_tools import VERSION
+from jme.jupy_tools.__version__ import VERSION
 from setuptools import setup, find_namespace_packages
 
 DESCRIPTION = "Thngs I've found Useful in Jupyter"
@@ -20,7 +20,7 @@ setup(name=NAME,
       url=URL,
       license=LICENSE,
 	  packages=find_namespace_packages(include=['jme.*']),
-      install_requires=['pandas', 'matplotlib'],
+      install_requires=['pandas', 'matplotlib', 'biopython'],
       classifiers=[
           'Development Status :: 3 - Alpha',
           'Environment :: Console',

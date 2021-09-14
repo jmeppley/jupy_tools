@@ -5,7 +5,8 @@ from itertools import chain
 from functools import reduce
 
 from matplotlib import pyplot as plt
-from jme.jupy_tools.utils import get_best_fit, parse_blast_m8, BLAST, BLAST_PLUS, PAF
+from jme.jupy_tools.utils import get_best_fit
+from jme.jupy_tools.hit_tables import parse_blast_m8, BLAST, BLAST_PLUS, PAF
 
 FFT = 'fft'
 CLUST = 'cluster'

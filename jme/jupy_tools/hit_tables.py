@@ -2,6 +2,8 @@ import logging
 import re
 import numpy
 import pandas
+from itertools import islice
+from functools import partial
 from contextlib import contextmanager
 from collections import defaultdict
 from jme.jupy_tools.utils import iterable_to_stream, first
@@ -78,7 +80,23 @@ blast_plus_rexp = re.compile(r"""^
                         """,
                              flags=re.VERBOSE)
 
-HIT_TABLE_REXPS = {PAF: paf_rexp, BLAST_PLUS: blast_plus_rexp}
+blast_tab_rexp = re.compile(r"""^
+                        (?P<query>\S+)\t
+                        (?P<hit>\S+)\t
+                        (?P<pctid>[0-9.]+)\t
+                        (?P<mlen>\d+)\t
+                        (?P<mismatches>\d+)\t
+                        (?P<gaps>\d+)\t
+                        (?P<qstart>\d+)\t
+                        (?P<qend>\d+)\t
+                        (?P<hstart>\d+)\t
+                        (?P<hend>\d+)\t
+                        (?P<evalue>\S+)\t
+                        (?P<score>\S+)
+                        """,
+                             flags=re.VERBOSE)
+
+HIT_TABLE_REXPS = {PAF: paf_rexp, BLAST: blast_tab_rexp, BLAST_PLUS: blast_plus_rexp}
 
 def computeLastHitValues(blocks):
     """
@@ -242,24 +260,47 @@ def generate_nonoverlapping_lines(hit_file, format=BLAST_PLUS, buffer=0):
                 query_regions.append(tuple(sorted((qstart, qend))))
                 yield line
 
-def agg_hit_df(non_ovl_hits):
+def agg_hit_df(non_ovl_hits, max_hit_fragments=0):
     # aggregate all hits by hit/query pair
     if 'matches' not in non_ovl_hits.columns:
         non_ovl_hits = non_ovl_hits.eval('matches = pctid * mlen / 100')
+        
+    # allow for the optin to just sum the first N fragments
+    if max_hit_fragments > 0:
+        def sum_first_N(S):
+            return sum(islice(S, max_hit_fragments))
+        non_ovl_hits = non_ovl_hits.sort_values('matches', ascending=False)
+    else:
+        sum_first_N = sum
 
+    # addup match ids and match lengths
+    agg_dict = {'matches':sum_first_N,'mlen':sum_first_N}
+    # also save qlen and hlen if present
+    for col in ['qlen', 'hlen']:
+        if col in non_ovl_hits.columns:
+            agg_dict[col] = first
+    
     agg_hits = non_ovl_hits \
         .groupby(['query','hit']) \
-        .agg({'matches':sum,'mlen':sum,'qlen':first, 'hlen':first}) \
+        .agg(agg_dict) \
         .eval('pctid=100 * matches / mlen') \
-        .eval('mfrac=200 * matches / (hlen + qlen)') \
         .reset_index()
-
+    
+    # calculate mfrac if we can
+    if 'qlen' in agg_hits.columns and 'hlen' in agg_hits.columns:
+        agg_hits = agg_hits.eval('mfrac=200 * matches / (hlen + qlen)')
+        
     return agg_hits    
                 
-def agg_hit_table(hit_table, ovl_buffer=0, **parse_args):
+def agg_hit_table(hit_table, ovl_buffer=0, max_hit_fragments=0, **parse_args):
     """
-    for each hit/query pair return one line of data
+    for each hit/query pair return one line of data by merging multiple hit fragments
+    
+    params:
+    
+     * ovl_buffer: allow merged hit fragments to overlap by this much (0)
+     * max_hit_fragments: only merge the N best fragments (unlimited)
     """
     non_ovl_hits = parse_blast_m8(hit_table, pair_overlap_buffer=ovl_buffer, **parse_args)
 
-    return agg_hit_df(non_ovl_hits)
+    return agg_hit_df(non_ovl_hits, max_hit_fragments)

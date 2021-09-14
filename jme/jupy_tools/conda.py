@@ -14,7 +14,7 @@ The argument can be an environment name or path, just as with the command line
 to revert, use deactivate:
 
     conda.deactivate()
-    
+
 Notes:
 
  * this module remembers all the past activate() calls and deactivate() steps back through them
@@ -52,14 +52,14 @@ def list_envs():
 def get_active_env():
     return active_env
 
-def activate(env=None, set_python_path=False, set_shell_path=True):
+def activate(env, set_python_path=False, set_shell_path=True):
     """
     This "activates" a requested conda environment. By default, the activation
     is only partial and only affects the shell's PATH environment variable
     (for more see set_python_path and set_shell_path params below).
-    
+
     This let's you easily access command line programs from other conda environments.
-    
+
     params:
      * env: the name or path of a conda environment. As of now, names are not perfectly
        supported. Absolute paths should always work.
@@ -68,26 +68,22 @@ def activate(env=None, set_python_path=False, set_shell_path=True):
        (This can cause problems, particularly if you switch envs frequently)
      * set_shell_path: by default, the os.environ[PATH] is updated to include the env's
        bin folder. Set this to False to leave the PATH unchanged.
-    
+
     """
     global active_env
     current_env = {"env": active_env, "path": os.environ["PATH"], "pypath": sys.path}
 
     # get the env location
-    if env != None:
-        try:
-            # is it a named env?
-            env = ENVS[env]
-        except KeyError:
-            if not os.path.isdir(f"{env}/bin"):
-                # if it's a path, it must have a bin dir
-                raise Exception(f"Cannot find env: {env}")
-        # add notebook's base dir as a fall back for shell PATH
-        env_dirs = [env, CONDA_BASE_DIR]
-    else:
-        # use the notebook's env
-        env_dirs = [CONDA_BASE_DIR]
-    
+    try:
+        # is it a named env?
+        env = ENVS[env]
+    except KeyError:
+        if not os.path.isdir(f"{env}/bin"):
+            # if it's a path, it must have a bin dir
+            raise Exception(f"Cannot find env: {env}")
+    # add notebook's base dir as a fall back for shell PATH
+    env_dirs = [env, CONDA_BASE_DIR]
+
     # save env path to global var
     active_env = env
 
@@ -99,7 +95,7 @@ def activate(env=None, set_python_path=False, set_shell_path=True):
         os.environ["PATH"] = ":".join(env_dirs + NON_CONDA_PATH)
 
     # update python's sys.path
-    if set_python_path: 
+    if set_python_path:
         if env is None:
             sys.path = ORIG_PATH
         else:
@@ -121,21 +117,21 @@ def deactivate():
 
 def fix_env():
     """ attempt to add the current env to the os.environ(PATH) """
-    
+
     # look for things of the form /some/path/lib/python...
     #  ...where there's a coda-meta dir in the same dir as /lib/
     for path in sys.path:
-        halves = path.split('/lib/python', 1)
-        if len(halves) > 1:
-            half = halves[0]
-            conda_meta = os.path.join(half, 'conda-meta')
+        m = re.search(r'(.+)/(lib/python|lib_pypy|site-packages).*', path)
+        if m:
+            prefix = m.group(1)
+            conda_meta = os.path.join(prefix, 'conda-meta')
             if os.path.exists(conda_meta) and os.path.isdir(conda_meta):
-                env = half
+                env = prefix
                 break
     else:
         raise Exception("Couldn't find anything in sys.path that looks like conda.")
-    activate(half)
-    
+    activate(env)
+
 # always try to fix the env
 try:
     fix_env()

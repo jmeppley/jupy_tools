@@ -3,18 +3,81 @@ import io
 import numpy
 import pandas
 import subprocess
+from collections import defaultdict
 from  Bio import SeqIO
+from matplotlib import pyplot as plt
+
+def parse_eggnog_annotations(eggnog_annot_file, skiprows=4):
+    """
+    Parse the eggnog annotations into a pandas.DataFrame.
+    
+    It takes two steps because the headers are commented out and there is a bunch of commented out stuff at the end we don't want.
+    
+    This function also pulls out the most general and most specific OG from the OGs column.
+    
+    params:
+        skiprows: the number of commented lines before the header line
+    """
+    
+    # load the first row of data with the header line, manually skipping first 4 rows of comments
+    eggnog_annot_cols = read_tsv(eggnog_annot_file, skiprows=skiprows, nrows=1, index_col=None).columns
+    
+    # drop the leading comment character from the first column header
+    eggnog_annot_cols = list(eggnog_annot_cols)
+    eggnog_annot_cols[0] = eggnog_annot_cols[0][1:]
+
+    # now load the whole thing skipping all commented lines
+    eggnog_annots = read_tsv(eggnog_annot_file, comment="#", header=None, 
+                             names=eggnog_annot_cols)
+
+    # parse the OGs column, pulling out the root OG and the most tax-specific OG
+    eggnog_annots['root_og'] = [ogs.split(",")[0].split("@")[0] for ogs in eggnog_annots.eggNOG_OGs]
+    eggnog_annots['tax_og'] = [ogs.split(",")[-1].split("@")[0] for ogs in eggnog_annots.eggNOG_OGs]
+    
+    return eggnog_annots
+
+
+def get_N_colors(N, cmap_name='Dark2'):
+    """ given N and a colormap, get N evenly spaced colors"""
+    try:
+        color_map = plt.get_cmap(cmap_name)
+        return [color_map(c) for c in numpy.linspace(0, 1, N)]
+    except ValueError:
+        # try reversing the colormap name
+        color_map = plt.get_cmap("".join(reversed(cmap_name)))
+        return [color_map(c) for c in reversed(numpy.linspace(0, 1, N))]
 
 def first(S):
     """ Simply return the first item from a collection (using next(iter(S))) """
     return next(iter(S))
+
+def classify(iterable, classifier):
+    """
+    group items in iterable based on the value returned by classifier(item)
+    
+    params:
+     * iterable
+     * classifier: a callable that can take a single item from the iterator
+     
+    returns:
+     * dictionary of lists where keys are the return values from classifier and
+       each value is a list of items that triggered that return value.
+       
+    >>> classify(range(10), lambda i: i%3)
+    {0: [0, 3, 6, 9], 1: [1, 4, 7], 2: [2, 5, 8]}
+    """
+    classes = defaultdict(list)
+    for i in iterable:
+        i_class = classifier(i)
+        classes[i_class].append(i)
+    return classes
 
 def read_tsv(tsv_file, **kwargs):
     kwargs.setdefault('sep', '\t')
     kwargs.setdefault('index_col', 0)
     return pandas.read_csv(tsv_file, **kwargs)
 
-def dotplot(qhits, ax=None, subplots_kws=None, seq_length=None):
+def dotplot(qhits, ax=None, subplots_kws=None, seq_length=None, **plot_kwargs):
     """ generate a dotplot-like plot from the given hit table """
     from matplotlib import pyplot as plt
     if ax is None:
@@ -25,12 +88,13 @@ def dotplot(qhits, ax=None, subplots_kws=None, seq_length=None):
     if seq_length is None:
         seq_length = qhits.mlen.max()
 
+    plot_kwargs.setdefault('color', 'black')
+    plot_kwargs.setdefault('alpha', .66)
     for i, hit in qhits.iterrows():
         ax.plot(
             [hit.qstart / seq_length, hit.qend / seq_length],
             [hit.hstart / seq_length, hit.hend / seq_length],
-            color="black",
-            alpha=0.66,
+            **plot_kwargs
         )
 
 def _print(msg, format_variables):
