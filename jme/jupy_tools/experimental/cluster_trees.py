@@ -1204,7 +1204,9 @@ class TreePlotter():
                 return taxon
         return None
         
-    def master_plot(self, title, metadata_metadata, clade_ratio_dicts,
+    def master_plot(self, title, 
+                    metadata_metadata=None,
+                    clade_ratio_dicts=None,
                     draw_genes=False,
                     max_plotted_genes=10,
                     max_colored_genes=10,
@@ -1216,25 +1218,53 @@ class TreePlotter():
                     gene_colors=None,
                     add_gene_descs='desc',
                     synteny_anchor_annot=None,
+                    tax_tree_height=1/3,
+                    md_width_factor=0.02,
+                    items_per_inch=6,
              ):
 
+        # set some defualts
         if isinstance(gene_colors, dict) and len(gene_colors) < max_plotted_genes:
             max_plotted_genes = len(gene_colors)
+
+        # calculate the figure and subplot sizes
         
+        # default figure width is bigger if we're drawing genes
+        fig_width = fig_width if fig_width else (20 if draw_genes else 12)
+        
+        # how much vertical space for the primary tree
         if collapsed_clade_labels:
             N = len(self.leaves) \
                  - sum(c.count_terminals() 
                       for c in collapsed_clade_labels) \
-                 + len(collapsed_clade_labels)
+                 + 2 * len(collapsed_clade_labels)
         else:
             N = len(self.leaves)
+        tree_height = N/items_per_inch
+        
+        # how much vertical space for genes/tax tree?
+        gene_height = max_plotted_genes/items_per_inch if draw_genes else 0         
+        fig_height = tree_height + max(gene_height, tax_tree_height)   
+        hr_tax_tree = tax_tree_height / tree_height
+        hr_gene = 0 \
+            if (tax_tree_height >= gene_height) \
+            else (gene_height - tax_tree_height) / tree_height
+            
+        # genes take up zero width if we're not darwing them
+        wr_genes = 1 if draw_genes else 0
+        
+        # relative width of metadata bars
+        wr_a = md_width_factor * (len(metadata_metadata) + 1) if metadata_metadata else 0
+        wr_b = md_width_factor * (len(clade_ratio_dicts) + 1) if clade_ratio_dicts else 0
 
-        tree_height = N/8
-        
-        wr_a = .02 * (len(metadata_metadata) + 1)
-        if clade_ratio_dicts:
-            wr_b = .02 * (len(clade_ratio_dicts) + 1)
-        
+        # set up grid
+        fig = plt.figure(figsize=[fig_width, fig_height], constrained_layout=False)
+        gs = fig.add_gridspec(3, 4, 
+                              width_ratios=[1, wr_genes, wr_a, wr_b],
+                              height_ratios=[hr_gene, hr_tax_tree, 1])
+
+
+        """
         if draw_genes:
             fig_width = fig_width if fig_width else 20
             gene_height = max_plotted_genes/8
@@ -1256,9 +1286,8 @@ class TreePlotter():
                                  gridspec_kw={'width_ratios': [1, 1, wr_a], 'height_ratios': [gene_ratio, 1]})
             _ = ax_gene.set_title(title, fontsize=axis_font_size)
         else:
-            tax_height = 1/3
-            fig_height = tax_height + tree_height
-            tax_ratio = tax_height / tree_height
+            fig_height = tax_tree_height + tree_height
+            tax_ratio = tax_tree_height / tree_height
             fig_width = fig_width if fig_width else 12
             if clade_ratio_dicts:
                 fig, ((ax0, ax2, ax_tax), 
@@ -1274,10 +1303,22 @@ class TreePlotter():
                                  figsize=[fig_width, fig_height*2], 
                                  gridspec_kw={'width_ratios': [1, wr_a], 'height_ratios': [tax_ratio, 1]})
             _ = ax_tree.set_title(title, fontsize=axis_font_size)
+        """
+        
+        # create only the subplots we're going to use 
+        ax_tree = fig.add_subplot(gs[2,0])
+        ax_md1 = fig.add_subplot(gs[2,2]) if metadata_metadata else None
+        ax_md2 = fig.add_subplot(gs[2,3]) if clade_ratio_dicts else None
+        ax_tax = fig.add_subplot(gs[1,3]) if clade_ratio_dicts else None
+        ax_gene = fig.add_subplot(gs[0:2,1]) if draw_genes else None
+        ax_synt = fig.add_subplot(gs[2,1]) if draw_genes else None
+        
+        # display the title (differnt subplot depending on layout)
+        title_ax = ax_gene if draw_genes else ax_tree        
+        _ = title_ax.set_title(title, fontsize=axis_font_size)
 
+        # this is a tight layout
         plt.subplots_adjust(wspace=0, hspace=0)
-        ax0.set_axis_off()
-        ax2.set_axis_off()
 
         y_posns = self.tree_plot(ax_tree, ax_tax, ax_md1, ax_md2, 
                             metadata_metadata,
@@ -1368,11 +1409,12 @@ class TreePlotter():
         _ = ax_tree.set_xlim(-.5, max_depth + 1.5)
 
         # draw simple metadata
-        draw_tree_metadata(ax_md1, y_posns,
-                                         metadata_metadata,
-                                         md_font_size=md_font_size,
-                                      )
-        _ = ax_md1.set_ylim(*ax_tree.get_ylim())
+        if metadata_metadata:
+            draw_tree_metadata(ax_md1, y_posns,
+                                             metadata_metadata,
+                                             md_font_size=md_font_size,
+                                          )
+            _ = ax_md1.set_ylim(*ax_tree.get_ylim())
 
         # draw taxonomic metadata
         if clade_ratio_dicts:
