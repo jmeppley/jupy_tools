@@ -116,7 +116,7 @@ def glob_wildcards(template, constraints=None, as_tuple=False, debug=False):
             # transform dict of names->matches to named tuple, if asked
             wildcards = Wildcards(**m.groupdict()) if as_tuple else m.groupdict()
             yield glob_file, wildcards
-        else:
+        elif debug:
             print("WARNING: {} doesn match {}".format(glob_file, wildcard_rexp.pattern))
 
 
