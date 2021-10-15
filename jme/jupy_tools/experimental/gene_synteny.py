@@ -11,7 +11,7 @@ plot_annot_positions(gene_data, genome_lengths, ax=None, **kwargs):
 
 
 """
-from collections import defaultdict
+from collections import defaultdict, Counter
 import re
 import numpy
 import pandas
@@ -70,7 +70,7 @@ def get_cluster_genes(gene_data, cluster, genome_lens):
     return cluster_genes
 
 def get_shared_genes(gene_data, N=10):
-   # get the positions of the named genes
+    # get the positions of the named genes
     annot_positions = defaultdict(list)
     for start, end, annot in gene_data[['start', 'end', 'annot']].values:
         if pandas.isna(annot) or len(annot.strip()) == 0:
@@ -122,10 +122,10 @@ def plot_annot_positions(gene_data, ax=None, gene_color_dict=None, **kwargs):
                               reverse=True)
         sorted_genes = top_N_annots
 
-    # sort ploted genes by mean position
+    # sort ploted genes by median position
     n = kwargs.get('max_plotted_genes', 18)
     sorted_annot = sorted([p for p in sorted_genes if len(annot_positions[p]) > 1][:n], 
-                       key=lambda p: numpy.mean(list(annot_positions[p])))
+                       key=lambda p: numpy.median(list(annot_positions[p])))
     
     # scatter positions, one row per gene
     for i, p in enumerate(sorted_annot):
@@ -140,6 +140,113 @@ def plot_annot_positions(gene_data, ax=None, gene_color_dict=None, **kwargs):
     _ = ax.set_ylim(-y_buff, i + y_buff)
     
     return top_N_annots, gene_color_dict
+
+def decorate_gene_labels(ax, gene_annots, desc_col):
+    # add info to the gene labels
+    genome_count = \
+        gene_annots.groupby(['genome','annot']).agg({'gene_no':len}).reset_index().groupby('annot').agg({'genome':len}).genome.to_dict()
+    if isinstance(desc_col, dict):
+        vog_descs=desc_col
+    else:
+        vog_descs = {}
+        for v,d in gene_annots[['annot',desc_col]].values:
+            if pandas.notna(v):
+                vog_descs[v] = f'{d} ({v}) (in {genome_count.get(v, "unknown")} genomes)'
+    new_labels = []
+    label_colors = []
+    for label in ax.get_yticklabels():
+        gene = label.get_text()
+        new_labels.append(vog_descs[gene])
+        label_colors.append(label.get_color())
+        
+    # This is a hack, but it works
+    _ = ax.set_yticklabels(new_labels)
+    for label, color in zip(ax.get_yticklabels(), label_colors):
+        label.set_color(color)
+
+def get_first_midpoint(gene_table):
+    start, end = gene_table.sort_values('start')[['start','end']].values[0]
+    return (start + end) / 2
+
+def get_mean_midpoint(annot, gene_table):
+    annot_midpoints = \
+        gene_table.query(f"annot == '{annot}'") \
+                  .groupby('genome') \
+                  .apply(get_first_midpoint)
+    if annot_midpoints.shape[0] == 0:
+        return None
+    return numpy.mean(annot_midpoints)
+
+def align_gene_locs(my_genes, anchor_on_annot=None):
+    """ Adjust annotation location in each genome to minimize difference 
+    
+    # TODO: some genomes need to be flipped, can we do this automatically?
+    """
+
+    cluster = set(my_genes.genome.values)
+    
+    # group by genome and annot to discount duplicate annots in one genome
+    most_common_annots = \
+        Counter(my_genes.query("annot != ''") \
+                        .groupby(['genome', 'annot']) \
+                        .agg({'strand': len}) \
+                        .reset_index()\
+                        .annot).most_common()
+    if not anchor_on_annot:
+        anchor_on_annot = most_common_annots[0][0]
+
+    annot_midpoints = \
+        my_genes.query(f"annot == '{anchor_on_annot}'") \
+                .groupby('genome') \
+                .apply(get_first_midpoint)
+
+    shifted_genes = None
+    shifted_genomes = set()
+    for genome, annot_midpoint in annot_midpoints.items():
+        shift = -1 * annot_midpoint
+        shifted_genome_genes = \
+            my_genes.query(f'genome == "{genome}"') \
+                    .eval(f'start = start + {shift}') \
+                    .eval(f'end = end + {shift}')
+        if shifted_genes is not None:
+            shifted_genes = shifted_genes.append(shifted_genome_genes)
+        else:
+            shifted_genes = shifted_genome_genes
+        shifted_genomes.add(genome)
+
+    # loop over unshifted genomes (didn't have the first annot)
+    shifted_midpoints = {}
+    for genome in cluster.difference(shifted_genomes):
+        genome_genes = my_genes.query(f'genome == "{genome}"')
+        genome_annots = set(genome_genes.annot)
+
+        # get the average shift to allign genes with already shifted genomes
+        shifts = []
+        for annot, count in most_common_annots:
+            if annot in genome_annots:
+                if annot in shifted_midpoints:
+                    shifted_midpoint = shifted_midpoints[annot]
+                else:
+                    shifted_midpoint = get_mean_midpoint(annot, shifted_genes)
+                    if shifted_midpoint is None:
+                        continue
+                    shifted_midpoints[annot] = shifted_midpoint
+
+                annot_midpoint = get_first_midpoint(genome_genes.query(f"annot == '{annot}'"))
+                shifts.append(shifted_midpoint - annot_midpoint)
+        if len(shifts) == 0:
+            raise Exception(f"No common annots in genome: {genome}")
+            
+        shift = numpy.mean(numpy.array(shifts))
+
+        shifted_genome_genes = \
+            genome_genes \
+                    .eval(f'start = start + {shift}') \
+                    .eval(f'end = end + {shift}')
+        shifted_genes = shifted_genes.append(shifted_genome_genes)
+        #shifted_genomes.add(genome)
+        
+    return shifted_genes
 
 def draw_genes(gene_data, annot_colors,
                genome_lens=None, 
@@ -163,7 +270,7 @@ def draw_genes(gene_data, annot_colors,
         max_genomes:
             cap on number of genomes plotted
         genome_order:
-            If this is a dict, use as a sorting key.
+            If this is a dict, values are interpreted as Y positions
             If this is a list, use as model order.
             If set to "genes" or any string, the order in the genes table is used.
             Default is to use the number of shared genes.
@@ -182,28 +289,41 @@ def draw_genes(gene_data, annot_colors,
         .index
     m = len(top_M_genomes)
     
-    # sort top_M if asked (defaults to most shared genes)
-    if genome_order is not None:
-        if not isinstance(genome_order, dict):
-            # build the sorting key dict
+    y_buff = kwargs.get('y_buffer', .5)        # y buffer for bottom plot
+    thickness = kwargs.get('thickness', .5)    # arrow thickness
+    
+    # turn genome order into y positions
+    if not isinstance(genome_order, dict):
+        # sort top_M if asked (defaults to most shared genes)
+        if genome_order is not None:
+            # re-order the top_M
             if isinstance(genome_order, str):
                 # use the order from the input table
-                genome_order = {}
-                for i, g in enumerate(gene_data.genome.values):
-                    if g not in genome_order:
-                        genome_order[g] = i
+                top_M_ordered = []
+                used_genomes = set()
+                for g in gene_data.genome.values:
+                    if g not in used_genomes:
+                        used_genomes.add(g)
+                        top_M_ordered .append(g)
             else:
                 # get order from list
-                genome_order = {g:i for i, g in enumerate(genome_order)}
-        top_M_genomes = sorted(top_M_genomes,
-                               key=lambda g: genome_order.get(g,g))
+                top_M_ordered = [g for g in genome_order if g in top_M_genomes]
+        else:
+            top_M_ordered = top_M_genomes
+        genome_y_posns = list(range(m))
+        max_y = m - 1
+        min_y = 0
+    else:
+        top_genomes = set(top_M_genomes)
+        top_M_ordered, genome_y_posns = \
+            zip(*[(g,y) for g, y in genome_order.items() if g in top_genomes])
+        min_y = min(genome_y_posns)
+        max_y = max(genome_y_posns)
 
-    y_buff = kwargs.get('y_buffer', .5)    
-    
     # calculate the sizes necessary to draw genes using the matplotlib arrow function
     x,y,w,h = ax.bbox.bounds      # w,h are ax size in pixels
     
-    y_ax_range = m + (2 * y_buff) # number of genomes with a .75 buffer at top and bottom
+    y_ax_range = (max_y - min_y) + thickness + (2 * y_buff)
     if genome_lens is None:
         # get range from genes
         min_x = gene_data[['start', 'end']].min().min()
@@ -215,13 +335,11 @@ def draw_genes(gene_data, annot_colors,
     y_pix_size = y_ax_range / h   # value per pixel
     x_pix_size = x_ax_range / w 
 
-    thickness = .5                                   # arrow thickness
     arrow_half_width = (thickness / 2) / y_pix_size  # y pixels in 1/2 an arrow
     head_length = arrow_half_width * x_pix_size      # value to get the same # of pixels in x axis
 
-    y = 0
     prev_genome = None
-    for name in top_M_genomes:
+    for name, y in zip(top_M_ordered, genome_y_posns):
         ## TODO: plot genome spines
         gene_table = gene_data.query(f'genome == "{name}"')
 
@@ -238,12 +356,9 @@ def draw_genes(gene_data, annot_colors,
                       head_length=hl, 
                       head_starts_at_zero=(int(strand) > 0))
 
-        # increment y value
-        y += 1
+    y = ax.set_ylim(min_y-y_buff, max_y + thickness + y_buff)
 
-    y = ax.set_ylim(-y_buff, y - y_buff)
-
-    ax.set_yticks(list(range(m)))
-    ax.set_yticklabels(top_M_genomes)
-    ax.set_xlabel('genome position')    
-    return top_M_genomes
+    ax.set_yticks(genome_y_posns)
+    ax.set_yticklabels(top_M_ordered)
+    ax.set_xlabel('relative genome position')    
+    return top_M_ordered
