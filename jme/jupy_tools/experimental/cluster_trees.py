@@ -448,7 +448,7 @@ class TreeMetadata():
         return self.get_color(self.data_dict.get(item, self.null_value))
 
 
-def draw_tree_metadata(ax, y_posns, metadata_metadata, y_axis_names=None, md_font_size=7):
+def draw_tree_metadata(ax, y_posns, metadata_metadata, y_axis_names=None, md_font_size=7, x_labels_on_top=False):
     """
     Draw metadata columns
     
@@ -462,6 +462,7 @@ def draw_tree_metadata(ax, y_posns, metadata_metadata, y_axis_names=None, md_fon
             
             
     """
+
     # plot metadata as heatmap (using bars())
     labels = []
     bottoms, heights, tops, nodes = [], [], [], []
@@ -478,7 +479,7 @@ def draw_tree_metadata(ax, y_posns, metadata_metadata, y_axis_names=None, md_fon
         bottom = top - height
         bottoms.append(bottom)
         tops.append(top)
-        
+
     for i, metadata in enumerate(metadata_metadata):
         colors = [metadata.get_item_color(g) for g in nodes]
         _ = ax.bar(i, 
@@ -493,27 +494,62 @@ def draw_tree_metadata(ax, y_posns, metadata_metadata, y_axis_names=None, md_fon
     # x axis labels
     _ = ax.set_xlim([-1,len(labels)])
     _ = ax.set_xticks(list(range(len(labels))))
-    _ = ax.set_xticklabels(labels, rotation=90, fontsize=md_font_size)
+    if x_labels_on_top:
+        _ = ax.set_xticklabels(labels, rotation=-90, fontsize=md_font_size)
+        _ = ax.xaxis.tick_top()
+    else:
+        _ = ax.set_xticklabels(labels, rotation=90, fontsize=md_font_size)
+        
+    # clear y axis labels    
+    ticks = []
+    _ = ax.set_yticks(ticks)
 
-    # y axis labels    
-    ticks, labels = [], []
+    
+def add_label_refs(ax, y_positions, y_axis_names=None, **kwargs):
+    """ put selected names on the right size of a plot 
+    
+        ax: matplotlib axes
+        y_positions: map from node objects to y positions
+        y_axis_names: optinal map from object to name or (sub)set of names to plot
+            terminal nodes are expected to be indexed by name. Non-terminal nodes, by object.
+        kwargs: arguments (eg fontsize) for set_yticklabels.
+    """
     if y_axis_names:
         if isinstance(y_axis_names, dict):
-            def get_name(genome):
+            def get_label(genome):
                 return y_axis_names[genome]
         else:
-            def get_name(genome):
+            def get_label(genome):
                 return genome
+        def use_genome(genome):
+            return genome in y_axis_names
+    else:
+        def get_label(genome):
+            return genome
+        def use_genome(genome):
+            return True
+        
+
+    ticks, labels = [], []
+    for node in y_positions:
+        if node.is_terminal():
+            height = 1
+            genome = node.name
+        else:
+            height = 2
+            genome = node
+        if use_genome(genome):
+            y = y_positions[node]
+            top = y + .5
+            bottom = top - height
             
-        for genome, bottom, top in zip(nodes, bottoms, tops):
-            if genome in y_axis_names:
-                ticks.append((bottom + top) / 2)
-                labels.append(get_name(genome))
-    
+            ticks.append((bottom + top) / 2)
+            labels.append(get_label(genome))
+
     _ = ax.yaxis.tick_right()
     _ = ax.set_yticks(ticks)
-    _ = ax.set_yticklabels(labels, fontsize=7)
-
+    kwargs.setdefault('fontsize', 7)
+    _ = ax.set_yticklabels(labels, **kwargs)
 
 # draw a tree with the option of collapsed nodes
 # (modified from Bio.Phylo.draw())
@@ -1394,27 +1430,44 @@ class TreePlotter():
                   tree_font_size=7,
                   axis_font_size=10,
                   md_font_size=9,
+                  internal_ref_labels=True,
                  ):
 
         max_depth = max(self.tree.depths().values())
+        
+        if internal_ref_labels:
+            def label_func(node):
+                if node.name:
+                    if node.name in self.ref_names:
+                        return f"{self.ref_names[node.name]} ({node.name})"                    
+                    else:
+                        return node.name
+                return None
+        else:
+            label_func = str
 
         # draw tree
         plt.rcParams["font.size"] = tree_font_size
         y_posns = draw(self.tree, axes=ax_tree, do_show=False, label_colors=self.leaf_color_fn,
-                                   collapsed_clade_labels=collapsed_clade_labels)
-
+                                   collapsed_clade_labels=collapsed_clade_labels, label_func=label_func)
+        
         _ = ax_tree.set_ylabel("Genome", fontsize=axis_font_size)
         _ = ax_tree.set_xlabel("Branch Length", fontsize=axis_font_size)
         _ = ax_tree.set_yticks([])
         _ = ax_tree.set_xlim(-.5, max_depth + 1.5)
 
+        # this may be overridden next if we have metadata
+        left_most_ax = ax_tree
+        
         # draw simple metadata
         if metadata_metadata:
             draw_tree_metadata(ax_md1, y_posns,
-                                             metadata_metadata,
-                                             md_font_size=md_font_size,
-                                          )
+                               metadata_metadata,
+                               md_font_size=md_font_size,
+                               x_labels_on_top=not bool(clade_ratio_dicts),
+                              )
             _ = ax_md1.set_ylim(*ax_tree.get_ylim())
+            left_most_ax = ax_md1
 
         # draw taxonomic metadata
         if clade_ratio_dicts:
@@ -1464,6 +1517,12 @@ class TreePlotter():
 
 
             _ = ax_md2.set_ylim(*ax_tree.get_ylim())
+            left_most_ax = ax_md2
+            
+        # label left side of left-most subplot with ref names
+        if self.ref_names and not internal_ref_labels:
+            add_label_refs(left_most_ax, y_posns, self.ref_names)
+        
 
         return y_posns
     

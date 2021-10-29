@@ -16,9 +16,10 @@ import re
 import numpy
 import pandas
 from matplotlib import pyplot as plt
+from matplotlib.colors import to_rgba
 from jme.jupy_tools.utils import get_N_colors
 
-BLACK = (0, 0, 0, 1)
+BLACK = (0., 0., 0., 1.)
 
 def import_genes(faa_file, annot_dict, genome_name_map=None):
     """
@@ -131,14 +132,14 @@ def plot_annot_positions(gene_data, ax=None, gene_color_dict=None, **kwargs):
     for i, p in enumerate(sorted_annot):
         x,y = zip(*((gp,i) for gp in annot_positions[p]))
         ax.scatter(x,y, 
-                   c=len(y) * [gene_color_dict.get(p, BLACK)], 
+                   c=(len(y) * [to_rgba(gene_color_dict.get(p, BLACK)),]),
                    ec=None, alpha=.5)
     _ = ax.set_yticks(range(len(sorted_annot)))
     ytl = ax.set_yticklabels(sorted_annot)
     for label in ytl:
-        label.set_color(gene_color_dict.get(label.get_text(), BLACK))
+        # this error throws a numpy warning and I can't make it stop
+        label.set_color(to_rgba(gene_color_dict.get(label.get_text(), BLACK)))
     _ = ax.set_ylim(-y_buff, i + y_buff)
-    
     return top_N_annots, gene_color_dict
 
 def decorate_gene_labels(ax, gene_annots, desc_col):
@@ -252,6 +253,7 @@ def draw_genes(gene_data, annot_colors,
                genome_lens=None, 
                ax=None, 
                genome_order=None,
+               default_annot_color='lightgrey',
                **kwargs):
     """
     Draws annotations for a set of genomes. If more genomes are given than
@@ -349,7 +351,7 @@ def draw_genes(gene_data, annot_colors,
             hl = min(head_length, end-start)
             al = max((end - start) - hl, .0001) * strand
             ast = start if al > 0 else end
-            color = annot_colors.get(annot, 'k')
+            color = annot_colors.get(annot, default_annot_color)
             ax.arrow(ast, y, al, 0, fc=color, ec=color, 
                       lw=0,
                       width=thickness, head_width=thickness, 
