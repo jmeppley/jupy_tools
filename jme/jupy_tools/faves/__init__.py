@@ -5,7 +5,7 @@ from jme.jupy_tools.filesystem import glob_wildcards
 from jme.jupy_tools.utils import LogLogger, first, read_tsv, get_seq_lens
 
 from collections import Counter, defaultdict
-from itertools import islice
+from itertools import islice, combinations, chain
 
 import pandas, numpy, os, sys, re, yaml
 from Bio import SeqIO
