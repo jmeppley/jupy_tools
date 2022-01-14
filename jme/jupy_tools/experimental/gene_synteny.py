@@ -84,7 +84,7 @@ def get_shared_genes(gene_data, N=10):
     top_N_annots = sorted_genes[:N]
     return top_N_annots
 
-def plot_annot_positions(gene_data, ax=None, gene_color_dict=None, **kwargs):
+def plot_annot_positions(gene_data, ax=None, gene_color_dict=None, min_annot_genomes=2, **kwargs):
     """
     Generates a summary of where the most common annotations are in a set of genomes
     
@@ -112,7 +112,8 @@ def plot_annot_positions(gene_data, ax=None, gene_color_dict=None, **kwargs):
     # chose which genes to color
     if gene_color_dict is None:
         N = kwargs.get('max_colored_genes', 10)
-        sorted_genes = sorted(annot_positions.keys(), key=lambda k: len(annot_positions[k]), reverse=True)
+        sorted_genes = sorted([g for g,ps in annot_positions.items() if len(ps) >= min_annot_genomes],
+                              key=lambda k: len(annot_positions[k]), reverse=True)
         top_N_annots = sorted_genes[:N]
         gene_color_dict = dict(zip(top_N_annots, get_N_colors(N, cmap_name=kwargs.get('gene_cmap', 'Dark2'))))
     else:
@@ -125,10 +126,11 @@ def plot_annot_positions(gene_data, ax=None, gene_color_dict=None, **kwargs):
 
     # sort ploted genes by median position
     n = kwargs.get('max_plotted_genes', 18)
-    sorted_annot = sorted([p for p in sorted_genes if len(annot_positions[p]) > 1][:n], 
+    sorted_annot = sorted(list(sorted_genes)[:n], 
                        key=lambda p: numpy.median(list(annot_positions[p])))
     
     # scatter positions, one row per gene
+    i = 0
     for i, p in enumerate(sorted_annot):
         x,y = zip(*((gp,i) for gp in annot_positions[p]))
         ax.scatter(x,y, 

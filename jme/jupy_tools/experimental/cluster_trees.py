@@ -10,7 +10,6 @@ from jme.jupy_tools.experimental import gene_synteny
 from edl.taxon import readTaxonomy
 from matplotlib import pyplot as plt
 from matplotlib.patches import Circle, Wedge, Polygon
-from matplotlib.collections import PatchCollection, PolyCollection
 from matplotlib.colors import to_rgba
 from scipy.cluster.hierarchy import dendrogram
 
@@ -96,8 +95,8 @@ def filter_cat_alignment(cat_alignment, genome_residue_frac=.05, residue_genome_
     # flag residues with <50% of genomes
     cutoff = len(cat_alignment) * residue_genome_frac
     residues_to_drop = {i
-                        for i, count in gapped_genome_counts.items()
-                        if count < cutoff}
+                        for i, gap_count in gapped_genome_counts.items()
+                        if (len(cat_alignment) - gap_count) < cutoff}
 
     # build new alignment dropping flagged residues and skipping genomes with too many gaps
     alignments = []
@@ -118,17 +117,21 @@ def filter_cat_alignment(cat_alignment, genome_residue_frac=.05, residue_genome_
                                               id=alignment.id))
     return Align.MultipleSeqAlignment(alignments,)
 
+def get_genes_from_genomes(gene_table, genomes, column='genome'):
+    """ subset table off the genome column """
+    genomes = set(genomes)
+    return gene_table[[g in genomes 
+                       for g in gene_table.genome.values]]
+
 class TreeBuilder():
     " loads and holds dat for a clustering "
-    def __init__(self, gene_table, genome_lengths):
+    def __init__(self, gene_table):
         self.gene_table = gene_table
-        self.seq_lens = genome_lengths
     
     @lru_cache(maxsize=None)
     def get_cl_genes(self, seqs):
-        return gene_synteny.get_cluster_genes(self.gene_table, 
-                                              seqs, 
-                                              self.seq_lens)
+        return get_genes_from_genomes(self.gene_table, 
+                                                   seqs)
     
     @lru_cache(maxsize=None)
     def get_cl_50_genes(self, seqs, min_hmm_frac=.5, min_hmm_len=100):
@@ -137,12 +140,12 @@ class TreeBuilder():
                    .query(f'hmm_frac >= {min_hmm_frac} and hmm_start + {min_hmm_len} <= hmm_end')
 
     @lru_cache(maxsize=None)
-    def get_seq_vog_counts(self, seqs, cutoff=.1, **cl_genes_kwargs):
+    def get_seq_vog_counts(self, seqs, cutoff=.1, max_copy_num=1.2, **cl_genes_kwargs):
         min_count = len(seqs) * cutoff
         cl_genes_50 = self.get_cl_50_genes(seqs, **cl_genes_kwargs)
         copy_num = cl_genes_50.groupby(['genome', 'vog']).agg({'gene_no': get_copy_no})
         mean_copy_num = copy_num.reset_index().groupby('vog').agg({'gene_no': numpy.mean})
-        sc_genes = set(mean_copy_num.query('gene_no <= 1.2').index)
+        sc_genes = set(mean_copy_num.query(f'gene_no <= {max_copy_num}').index)
 
         return copy_num \
             .reset_index()[[vog in sc_genes for genome, vog in copy_num.index]][['genome','vog']] \
@@ -561,6 +564,8 @@ def draw(
     # For power users
     axes=None,
     branch_labels=None,
+    branch_label_x_delta=0,
+    branch_label_y_delta=-.25,
     label_colors=None,
     collapsed_clade_labels=None,
     collapsed_clade_heights=None,
@@ -756,10 +761,9 @@ def draw(
         return depths
 
 
+        ## TODO: this is never reached!
         # map terminals to any collapsed parent clades
         # and count how many rows the collapsed clades will take up
-
-
 
         # did we get a mapping or collection?
         try:
@@ -867,7 +871,6 @@ def draw(
         )
 
     def draw_clade_lines(
-        use_linecollection=False,
         orientation="horizontal",
         y_here=0,
         x_start=0,
@@ -882,22 +885,19 @@ def draw(
         Graphical formatting of the lines representing clades in the plot can be
         customized by altering this function.
         """
-        if not use_linecollection and orientation == "horizontal":
-            axes.hlines(y_here, x_start, x_here, color=color, lw=lw)
-        elif use_linecollection and orientation == "horizontal":
+        if orientation == "horizontal":
             horizontal_linecollections.append(
                 mpcollections.LineCollection(
                     [[(x_start, y_here), (x_here, y_here)]], color=color, lw=lw
                 )
             )
-        elif not use_linecollection and orientation == "vertical":
-            axes.vlines(x_here, y_bot, y_top, color=color)
-        elif use_linecollection and orientation == "vertical":
+        elif orientation == "vertical":
             vertical_linecollections.append(
                 mpcollections.LineCollection(
                     [[(x_here, y_bot), (x_here, y_top)]], color=color, lw=lw
                 )
             )
+
 
     def draw_clade(clade, x_start, color, lw):
         """Recursively draw a tree, down from the given clade."""
@@ -910,7 +910,6 @@ def draw(
             lw = clade.width * plt.rcParams["lines.linewidth"]
         # Draw a horizontal line from start to here
         draw_clade_lines(
-            use_linecollection=True,
             orientation="horizontal",
             y_here=y_here,
             x_start=x_start,
@@ -922,11 +921,14 @@ def draw(
         conf_label = format_branch_label(clade)
         if conf_label:
             axes.text(
-                0.5 * (x_start + x_here),
+                #0.5 * (x_start + x_here),
+                x_here,
                 y_here,
                 conf_label,
                 fontsize="small",
-                horizontalalignment="center",
+                #horizontalalignment="center",
+                horizontalalignment="right",
+                verticalalignment='bottom',
             )
         if clade not in collapsed_clade_heights:
             # Add node/taxon labels
@@ -945,7 +947,6 @@ def draw(
                 y_bot = y_posns[clade.clades[-1]]
                 # Only apply widths to horizontal lines, like Archaeopteryx
                 draw_clade_lines(
-                    use_linecollection=True,
                     orientation="vertical",
                     x_here=x_here,
                     y_bot=y_bot,
@@ -981,7 +982,6 @@ def draw(
                     verticalalignment="center",
                     color=get_label_color(label),
                 )
-
 
     draw_clade(tree.root, 0, "k", plt.rcParams["lines.linewidth"])
 
@@ -1299,48 +1299,6 @@ class TreePlotter():
                               width_ratios=[1, wr_genes, wr_a, wr_b],
                               height_ratios=[hr_gene, hr_tax_tree, 1])
 
-
-        """
-        if draw_genes:
-            fig_width = fig_width if fig_width else 20
-            gene_height = max_plotted_genes/8
-            fig_height = tree_height + gene_height
-            gene_ratio = gene_height / tree_height
-
-            if clade_ratio_dicts:
-                fig, ((ax0, ax_gene, ax2, ax_tax), 
-                      (ax_tree, ax_synt, ax_md1, ax_md2)) = \
-                    plt.subplots(2, 4, squeeze=False,
-                                 figsize=[fig_width, fig_height*2], 
-                                 gridspec_kw={'width_ratios': [1, 1, wr_a, wr_b], 'height_ratios': [gene_ratio, 1]})
-            else:
-                ax_tax, ax_md2 = None, None
-                fig, ((ax0, ax_gene, ax2), 
-                      (ax_tree, ax_synt, ax_md1)) = \
-                    plt.subplots(2, 3, squeeze=False,
-                                 figsize=[fig_width, fig_height*2], 
-                                 gridspec_kw={'width_ratios': [1, 1, wr_a], 'height_ratios': [gene_ratio, 1]})
-            _ = ax_gene.set_title(title, fontsize=axis_font_size)
-        else:
-            fig_height = tax_tree_height + tree_height
-            tax_ratio = tax_tree_height / tree_height
-            fig_width = fig_width if fig_width else 12
-            if clade_ratio_dicts:
-                fig, ((ax0, ax2, ax_tax), 
-                      (ax_tree, ax_md1, ax_md2)) = \
-                    plt.subplots(2, 3, squeeze=False,
-                                 figsize=[fig_width, fig_height*2], 
-                                 gridspec_kw={'width_ratios': [1, wr_a, wr_b], 'height_ratios': [tax_ratio, 1]})
-            else:
-                ax_tax, ax_md2 = None, None
-                fig, ((ax0, ax2), 
-                      (ax_tree, ax_md1)) = \
-                    plt.subplots(2, 2, squeeze=False,
-                                 figsize=[fig_width, fig_height*2], 
-                                 gridspec_kw={'width_ratios': [1, wr_a], 'height_ratios': [tax_ratio, 1]})
-            _ = ax_tree.set_title(title, fontsize=axis_font_size)
-        """
-        
         # create only the subplots we're going to use 
         ax_tree = fig.add_subplot(gs[2,0])
         ax_md1 = fig.add_subplot(gs[2,2]) if metadata_metadata else None
@@ -1356,14 +1314,14 @@ class TreePlotter():
         # this is a tight layout
         plt.subplots_adjust(wspace=0, hspace=0)
 
-        y_posns = self.tree_plot(ax_tree, ax_tax, ax_md1, ax_md2, 
-                            metadata_metadata,
-                            clade_ratio_dicts,
-                            collapsed_clade_labels=collapsed_clade_labels,
-                            md_font_size=md_font_size,
-                            tree_font_size=tree_font_size,
-                            axis_font_size=axis_font_size,
-                           )
+        y_posns = self.tree_plot(
+                    ax_tree, ax_tax, ax_md1, ax_md2, 
+                    metadata_metadata,
+                    clade_ratio_dicts,
+                    collapsed_clade_labels=collapsed_clade_labels,
+                    md_font_size=md_font_size,
+                    tree_font_size=tree_font_size,
+                    axis_font_size=axis_font_size,)
 
         if draw_genes:
             if not callable(draw_genes):
@@ -1397,6 +1355,8 @@ class TreePlotter():
                                  anchor_annot=synteny_anchor_annot,
                                 )
             _ = ax_synt.set_ylim(*ax_tree.get_ylim())
+            
+        return fig
 
     def _find_shadow_clades(self, clade_names):
         ancestors = defaultdict(list)
@@ -1448,8 +1408,12 @@ class TreePlotter():
 
         # draw tree
         plt.rcParams["font.size"] = tree_font_size
-        y_posns = draw(self.tree, axes=ax_tree, do_show=False, label_colors=self.leaf_color_fn,
-                                   collapsed_clade_labels=collapsed_clade_labels, label_func=label_func)
+        y_posns = draw(self.tree,
+                       axes=ax_tree,
+                       do_show=False,
+                       label_colors=self.leaf_color_fn,
+                       collapsed_clade_labels=collapsed_clade_labels,
+                       label_func=label_func)
         
         _ = ax_tree.set_ylabel("Genome", fontsize=axis_font_size)
         _ = ax_tree.set_xlabel("Branch Length", fontsize=axis_font_size)
@@ -1560,3 +1524,337 @@ def get_clade_ratio_dicts_dict(gene_hits, seqs=None, columns=None):
         clade_dicts_dict[clade_col] = {o:clade_ratios[o].to_dict() for o in clade_ratios.columns}    
     
     return clade_dicts_dict
+
+
+# draw a tree in polar space
+# (modified from Bio.Phylo.draw())
+def draw_polar(
+    tree,
+    label_func=str,
+    do_show=True,
+    show_confidence=True,
+    # For power users
+    axes=None,
+    branch_labels=None,
+    branch_label_x_delta=0,
+    branch_label_y_delta=-.25,
+    label_colors=None,
+    *args,
+    **kwargs
+):
+    """Plot the given tree using matplotlib (or pylab).
+
+    The graphic is a rooted tree, drawn with roughly the same algorithm as
+    draw_ascii.
+
+    Additional keyword arguments passed into this function are used as pyplot
+    options. The input format should be in the form of:
+    pyplot_option_name=(tuple), pyplot_option_name=(tuple, dict), or
+    pyplot_option_name=(dict).
+
+    Example using the pyplot options 'axhspan' and 'axvline'::
+
+        from Bio import Phylo, AlignIO
+        from Bio.Phylo.TreeConstruction import DistanceCalculator, DistanceTreeConstructor
+        constructor = DistanceTreeConstructor()
+        aln = AlignIO.read(open('TreeConstruction/msa.phy'), 'phylip')
+        calculator = DistanceCalculator('identity')
+        dm = calculator.get_distance(aln)
+        tree = constructor.upgma(dm)
+        Phylo.draw(tree, axhspan=((0.25, 7.75), {'facecolor':'0.5'}),
+        ... axvline={'x':0, 'ymin':0, 'ymax':1})
+
+    Visual aspects of the plot can also be modified using pyplot's own functions
+    and objects (via pylab or matplotlib). In particular, the pyplot.rcParams
+    object can be used to scale the font size (rcParams["font.size"]) and line
+    width (rcParams["lines.linewidth"]).
+
+    :Parameters:
+        label_func : callable
+            A function to extract a label from a node. By default this is str(),
+            but you can use a different function to select another string
+            associated with each node. If this function returns None for a node,
+            no label will be shown for that node.
+        do_show : bool
+            Whether to show() the plot automatically.
+        show_confidence : bool
+            Whether to display confidence values, if present on the tree.
+        axes : matplotlib/pylab axes
+            If a valid matplotlib.axes.Axes instance, the phylogram is plotted
+            in that Axes. By default (None), a new figure is created.
+        branch_labels : dict or callable
+            A mapping of each clade to the label that will be shown along the
+            branch leading to it. By default this is the confidence value(s) of
+            the clade, taken from the ``confidence`` attribute, and can be
+            easily toggled off with this function's ``show_confidence`` option.
+            But if you would like to alter the formatting of confidence values,
+            or label the branches with something other than confidence, then use
+            this option.
+        label_colors : dict or callable
+            A function or a dictionary specifying the color of the tip label.
+            If the tip label can't be found in the dict or label_colors is
+            None, the label will be shown in black.
+
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        try:
+            import pylab as plt
+        except ImportError:
+            raise MissingPythonDependencyError(
+                "Install matplotlib or pylab if you want to use draw."
+            ) from None
+
+    import matplotlib.collections as mpcollections
+
+    # Arrays that store lines for the plot of clades
+    horizontal_linecollections = []
+    vertical_linecollections = []
+
+    # Options for displaying branch labels / confidence
+    def conf2str(conf):
+        if int(conf) == conf:
+            return str(int(conf))
+        return str(conf)
+
+    if not branch_labels:
+        if show_confidence:
+
+            def format_branch_label(clade):
+                try:
+                    confidences = clade.confidences
+                    # phyloXML supports multiple confidences
+                except AttributeError:
+                    pass
+                else:
+                    return "/".join(conf2str(cnf.value) for cnf in confidences)
+                if clade.confidence is not None:
+                    return conf2str(clade.confidence)
+                return None
+
+        else:
+
+            def format_branch_label(clade):
+                return None
+
+    elif isinstance(branch_labels, dict):
+
+        def format_branch_label(clade):
+            return branch_labels.get(clade)
+
+    else:
+        if not callable(branch_labels):
+            raise TypeError(
+                "branch_labels must be either a dict or a callable (function)"
+            )
+        format_branch_label = branch_labels
+
+    # options for displaying label colors.
+    if label_colors:
+        if callable(label_colors):
+
+            def get_label_color(label):
+                return label_colors(label)
+
+        else:
+            # label_colors is presumed to be a dict
+            def get_label_color(label):
+                return label_colors.get(label, "black")
+
+    else:
+
+        def get_label_color(label):
+            # if label_colors is not specified, use black
+            return "black"
+
+    # Layout
+
+    def get_x_positions(tree):
+        """Create a mapping of each clade to its horizontal position.
+
+        Dict of {clade: x-coord}
+        """
+        depths = tree.depths()
+        # If there are no branch lengths, assume unit branch lengths
+        if not max(depths.values()):
+            depths = tree.depths(unit_branch_lengths=True)
+        return depths
+
+
+    def get_y_positions(tree):
+        """Create a mapping of each clade to its vertical position.
+
+        Dict of {clade: y-coord}.
+        Coordinates are negative, and integers for tips.
+        """
+        # total height is number of leaves
+        maxheight = tree.count_terminals()
+        # Rows are defined by the tips
+        heights = {
+            tip: maxheight - i for i, tip in enumerate(reversed(tree.get_terminals()))
+        }
+
+        # Internal nodes: place at midpoint of children
+        def calc_row(clade):
+            for subclade in clade:
+                if subclade not in heights:
+                    calc_row(subclade)
+            # Closure over heights
+            heights[clade] = (
+                heights[clade.clades[0]] + heights[clade.clades[-1]]
+            ) / 2.0
+
+        if tree.root.clades:
+            calc_row(tree.root)
+        return heights
+
+    x_posns = get_x_positions(tree)
+    y_posns  = get_y_positions(tree)
+    terminals = []
+    # The function draw_clade closes over the axes object
+    if axes is None:
+        fig = plt.figure()
+        axes = fig.add_subplot(1, 1, 1, subplot_kw={'projection': 'polar'})
+    elif not isinstance(axes, plt.matplotlib.axes.Axes):
+        raise ValueError("Invalid argument for axes: %s" % axes)
+
+    def draw_clade_lines(
+        orientation="horizontal",
+        y_here=0,
+        x_start=0,
+        x_here=0,
+        y_bot=0,
+        y_top=0,
+        color="black",
+        lw=".1",
+    ):
+        """Create a line with or without a line collection object.
+
+        Graphical formatting of the lines representing clades in the plot can be
+        customized by altering this function.
+        """
+        if orientation == "horizontal":
+            horizontal_linecollections.append(
+                mpcollections.LineCollection(
+                    [[(y_here, x_start), (y_here, x_here)]], color=color, lw=lw
+                )
+            )
+        elif orientation == "vertical":
+            vertical_linecollections.append(
+                mpcollections.LineCollection(
+                    [[(y_bot, x_here), (y_top, x_here)]], color=color, lw=lw
+                )
+            )
+
+    def draw_clade(clade, x_start, color, lw):
+        """Recursively draw a tree, down from the given clade."""
+        x_here = x_posns[clade]
+        y_here = y_posns[clade]
+        # phyloXML-only graphics annotations
+        if hasattr(clade, "color") and clade.color is not None:
+            color = clade.color.to_hex()
+        if hasattr(clade, "width") and clade.width is not None:
+            lw = clade.width * plt.rcParams["lines.linewidth"]
+        # Draw a horizontal line from start to here
+        draw_clade_lines(
+            orientation="horizontal",
+            y_here=y_here,
+            x_start=x_start,
+            x_here=x_here,
+            color=color,
+            lw=lw,
+        )
+        # Add label above the branch (optional)
+        conf_label = format_branch_label(clade)
+        if conf_label:
+            ## TODO: polar!
+            axes.text(
+                #0.5 * (x_start + x_here),
+                x_here,
+                y_here,
+                conf_label,
+                fontsize="small",
+                #horizontalalignment="center",
+                horizontalalignment="right",
+                verticalalignment='bottom',
+            )
+        # Add node/taxon labels
+        label = label_func(clade)
+        if label not in (None, clade.__class__.__name__):
+            ## TODO: polar!
+            axes.text(
+                x_here,
+                y_here,
+                " %s" % label,
+                verticalalignment="center",
+                color=get_label_color(label),
+            )
+        if clade.clades:
+            # Draw a vertical line connecting all children
+            y_top = y_posns[clade.clades[0]]
+            y_bot = y_posns[clade.clades[-1]]
+            # Only apply widths to horizontal lines, like Archaeopteryx
+            draw_clade_lines(
+                orientation="vertical",
+                x_here=x_here,
+                y_bot=y_bot,
+                y_top=y_top,
+                color=color,
+                lw=lw,
+            )
+            # Draw descendents
+            for child in clade:
+                draw_clade(child, x_here, color, lw)
+        else:
+            terminals.append(clade)
+
+
+    draw_clade(tree.root, 0, "k", plt.rcParams["lines.linewidth"])
+
+    # If line collections were used to create clade lines, here they are added
+    # to the pyplot plot.
+    for i in horizontal_linecollections:
+        axes.add_collection(i)
+    for i in vertical_linecollections:
+        axes.add_collection(i)
+
+    # Aesthetics
+
+    try:
+        name = tree.name
+    except AttributeError:
+        pass
+    else:
+        if name:
+            axes.set_title(name)
+    axes.set_xlabel("branch length")
+    axes.set_ylabel("taxa")
+    # Add margins around the tree to prevent overlapping the axes
+    xmax = max(x_posns.values())
+    axes.set_ylim(-0.05 * xmax, 1.25 * xmax)
+    # Add a small vertical margin, but avoid including 0 and N+1 on the y axis
+    axes.set_xlim(0.2, max(y_posns.values()) + 0.8)
+
+    # Parse and process key word arguments as pyplot options
+    for key, value in kwargs.items():
+        try:
+            # Check that the pyplot option input is iterable, as required
+            list(value)
+        except TypeError:
+            raise ValueError(
+                'Keyword argument "%s=%s" is not in the format '
+                "pyplot_option_name=(tuple), pyplot_option_name=(tuple, dict),"
+                " or pyplot_option_name=(dict) " % (key, value)
+            ) from None
+        if isinstance(value, dict):
+            getattr(plt, str(key))(**dict(value))
+        elif not (isinstance(value[0], tuple)):
+            getattr(plt, str(key))(*value)
+        elif isinstance(value[0], tuple):
+            getattr(plt, str(key))(*value[0], **dict(value[1]))
+
+    if do_show:
+        plt.show()
+        
+    return {t:y_posns[t] for t in terminals}
