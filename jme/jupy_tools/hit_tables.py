@@ -10,6 +10,9 @@ from jme.jupy_tools.utils import iterable_to_stream, first
 
 LOGGER = logging.getLogger(__name__)
 
+# params for getting lastal to behave like blastx (from E Ottesen)
+LASTP_PARAMS = "-b 1 -x 15 -y 7 -z 25"
+
 BLAST_COLUMNS = [
         "query",
         "hit",
@@ -274,11 +277,22 @@ def agg_hit_df(non_ovl_hits, max_hit_fragments=0):
         sum_first_N = sum
 
     # addup match ids and match lengths
-    agg_dict = {'matches':sum_first_N,'mlen':sum_first_N}
+    agg_dict = {'matches':sum_first_N,
+                'mlen':sum_first_N}
+
     # also save qlen and hlen if present
     for col in ['qlen', 'hlen']:
         if col in non_ovl_hits.columns:
             agg_dict[col] = first
+
+    # calculate query and hit specific alignment lengths if we can
+    for pref in ['q','h']:
+        scol, ecol = [pref+col for col in ['start','end']]
+        if scol in non_ovl_hits.columns and ecol in non_ovl_hits.columns:
+            non_ovl_hits = non_ovl_hits.eval(
+                f"{pref}mlen = 1 + abs({ecol} - {scol})"
+            )
+            agg_dict[pref + "mlen"] = sum
     
     agg_hits = non_ovl_hits \
         .groupby(['query','hit']) \
