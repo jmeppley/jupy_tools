@@ -4,7 +4,6 @@ from collections import defaultdict
 from itertools import chain
 from functools import reduce
 
-from matplotlib import pyplot as plt
 from jme.jupy_tools.utils import get_best_fit
 from jme.jupy_tools.hit_tables import parse_blast_m8, BLAST, BLAST_PLUS, PAF
 
@@ -14,6 +13,7 @@ JB = 'jb'
 
 def dotplot(qhits, ax=None, subplots_kws=None, seq_length=None):
     if ax is None:
+        from matplotlib import pyplot as plt
         if subplots_kws is None:
             subplots_kws = {}
         subplots_kws.setdefault("figsize", [8, 8])
