@@ -4,16 +4,16 @@ import attr
 from Bio import Align, Seq, SeqRecord, AlignIO, SeqIO, Phylo
 from collections import defaultdict, Counter
 from functools import lru_cache
-from itertools import combinations, islice
+from itertools import combinations, islice, chain
 from jme.jupy_tools.utils import read_tsv
 from jme.jupy_tools.experimental import gene_synteny
 from edl.taxon import readTaxonomy
 from matplotlib import pyplot as plt
 from matplotlib.patches import Circle, Wedge, Polygon
 from matplotlib.colors import to_rgba
-from scipy.cluster.hierarchy import dendrogram
+from scipy.cluster.hierarchy import dendrogram, linkage, cut_tree
 
-def cat_tree_dir_alignment(aln_files_by_vog):
+def cat_tree_dir_alignment(aln_files_by_vog, **kwargs):
     """
     Given: dict from gene name to stockholm aln file,
     
@@ -25,7 +25,7 @@ def cat_tree_dir_alignment(aln_files_by_vog):
 
     # parse alignments
     for vog, align_file in aln_files_by_vog.items():
-        vog_alignment = AlignIO.read(align_file, format='stockholm')
+        vog_alignment = AlignIO.read(align_file, format=kwargs.get('format','stockholm'))
 
         # keep a record of where genomes aligned
         for i, gene in enumerate(vog_alignment):
@@ -451,7 +451,7 @@ class TreeMetadata():
         return self.get_color(self.data_dict.get(item, self.null_value))
 
 
-def draw_tree_metadata(ax, y_posns, metadata_metadata, y_axis_names=None, md_font_size=7, x_labels_on_top=False):
+def draw_tree_metadata(ax, y_posns, metadata_metadata, md_font_size=7, x_labels_on_top=False, thickness=1):
     """
     Draw metadata columns
     
@@ -460,9 +460,6 @@ def draw_tree_metadata(ax, y_posns, metadata_metadata, y_axis_names=None, md_fon
         y_posns: dict
             map from Phylo tree nodes or clades to y locations
         metadata_metadata: list of TreeMetadata objects
-        y_axis_names: set or other collection or None
-            if given, any node/clade names listed will be used to label the far side of the y axis
-            
             
     """
 
@@ -471,12 +468,14 @@ def draw_tree_metadata(ax, y_posns, metadata_metadata, y_axis_names=None, md_fon
     bottoms, heights, tops, nodes = [], [], [], []
     for node in y_posns:
         y = y_posns[node]
-        top = y + .5
-        if node.is_terminal():
-            height = 1
+        top = y + thickness/2
+        if isinstance(node, str):
+            height = thickness
+        elif node.is_terminal():
+            height = thickness
             node = node.name
         else:
-            height = 2
+            height = thickness * 2
         nodes.append(node)
         heights.append(height)
         bottom = top - height
@@ -1088,10 +1087,10 @@ def get_tax_linkage(root_node, leaves):
             linkage: is a linkage table suiatble for scipy.cluster.hierarchy.dendrogram
             leaf_index_dict: is a map from leaf names to index in the linkage
     """
-    linkage = []
+    taxlinkage = []
     leaf_index_dict = {leaf:i for i, leaf in enumerate(leaves)}
-    _get_tax_linkage_recursive(root_node, linkage, leaf_index_dict)
-    return numpy.array(linkage), leaf_index_dict
+    _get_tax_linkage_recursive(root_node, taxlinkage, leaf_index_dict)
+    return numpy.array(taxlinkage), leaf_index_dict
 
 def generate_collapsed_nodes(tree, cluster_dict, 
                              max_node_size=0,
@@ -1142,11 +1141,20 @@ def cluster_synteny_plot(genome_y_vals, ax1, ax2,
                          max_genomes=40,
                          add_gene_descs=None,
                          set_titles=True,
+                         label_genomes=True,
                          anchor_annot=None,
+                         anchor_side=None,
+                         anchor_strand=None,
+                         **kwargs,
                         ):
     
     my_genes = gene_synteny.get_cluster_genes(gene_table, set(genome_y_vals.keys()), genome_lens)
-    shifted_genes = gene_synteny.align_gene_locs(my_genes, anchor_annot)
+    shifted_genes = gene_synteny.align_gene_locs(my_genes,
+                                                 anchor_annot,
+                                                 anchor_side,
+                                                 anchor_strand,
+                                                 genome_lens,
+                                                )
 
     # sync X axes
     ax1.get_shared_x_axes().join(ax1, ax2)
@@ -1154,15 +1162,15 @@ def cluster_synteny_plot(genome_y_vals, ax1, ax2,
     # ax2.autoscale() ## call autoscale if needed
     
     if isinstance(gene_colors, dict):
-        kwargs = dict(gene_color_dict=gene_colors)
+        syn_kwargs = dict(gene_color_dict=gene_colors)
     else:
-        kwargs = dict(gene_cmap=gene_colors)
+        syn_kwargs = dict(gene_cmap=gene_colors)
 
     top_annots, gene_colors = gene_synteny.plot_annot_positions(shifted_genes, 
                                                                 ax=ax1, 
                                                                 max_colored_genes=max_colored_genes,
                                                                 max_plotted_genes=max_plotted_genes,
-                                                                **kwargs
+                                                                **syn_kwargs
                                                                )
     n_genes = len(ax1.get_yticks())
     
@@ -1180,18 +1188,19 @@ def cluster_synteny_plot(genome_y_vals, ax1, ax2,
     plotted_reads = gene_synteny.draw_genes(shifted_genes, gene_colors, 
                                             ax=ax2, 
                                             genome_order=genome_y_vals,
-                                            max_genomes=max_genomes)
+                                            max_genomes=max_genomes, **kwargs)
     if set_titles:
         _ = ax2.set_title(f"top {len(plotted_reads)} genomes of {len(set(my_genes.genome))}")
+
+    if label_genomes:
+        if genome_2_subcluster or subcluster_colors:
+            subcluster_colors = subcluster_colors if subcluster_colors is not None \
+                                else get_subcluster_colors(genome_2_subcluster)
+            for label in ax2.get_yticklabels():
+                g = label.get_text()
+                label.set_color(subcluster_colors.get(g,'black'))
     else:
         _ = ax2.set_yticks([])
-
-    if genome_2_subcluster or subcluster_colors:
-        subcluster_colors = subcluster_colors if subcluster_colors is not None \
-                            else get_subcluster_colors(genome_2_subcluster)
-        for label in ax2.get_yticklabels():
-            g = label.get_text()
-            label.set_color(subcluster_colors.get(g,'black'))
 
 
 def get_tree_plotter_data(genomes_tsv, 
@@ -1204,7 +1213,7 @@ def get_tree_plotter_data(genomes_tsv,
     gene_table = read_tsv(genes_tsv)
     taxonomy = readTaxonomy(taxdump_dir)
     ref_taxa = read_tsv(refs_tsv)
-    
+
     return dict(seq_lens=genome_df.length.to_dict(),
                 gene_table=gene_table,
                 ref_taxa=ref_taxa,
@@ -1213,7 +1222,7 @@ def get_tree_plotter_data(genomes_tsv,
                 ref_names=ref_taxa.name.to_dict(),
                 leaf_color_fn=leaf_color_fn,
                )
-        
+
 class TreePlotter():
     def __init__(self, tree, 
                  seq_lens,
@@ -1223,8 +1232,18 @@ class TreePlotter():
                  leaf_color_fn=lambda l: 'black',
                  **kwargs
                 ):
+        '''If tree is a dictionary, it is assumed to be a distance matrix 
+           and a hierarical clustering tree will be generated
+           
+           (tree dict should look like {(genome1, genome2): dist12, (genome1, genome3): dist13, ...})
+           
+           '''
         self.tree = tree
-        self.leaves = set(self.tree.get_terminals())
+        self.is_hier = isinstance(tree, dict)
+        if self.is_hier:
+            self.leaves = set(chain(*tree.keys()))
+        else:
+            self.leaves = set(self.tree.get_terminals())
         self.seq_lens = seq_lens
         self.gene_table = gene_table
         self.taxonomy = taxonomy
@@ -1232,14 +1251,14 @@ class TreePlotter():
         self.highlight_map = plt.get_cmap('Greens')    
         self.ref_names = ref_names
         self.leaf_color_fn = leaf_color_fn
-        
+
     @lru_cache(maxsize=None)
     def get_taxon(self, name):
         for taxon in self.taxonomy.idMap.values():
             if taxon.name == name:
                 return taxon
         return None
-        
+
     def master_plot(self, title, 
                     metadata_metadata=None,
                     clade_ratio_dicts=None,
@@ -1254,9 +1273,12 @@ class TreePlotter():
                     gene_colors=None,
                     add_gene_descs='desc',
                     synteny_anchor_annot=None,
+                    synteny_anchor_side=None,
+                    synteny_anchor_strand=None,
                     tax_tree_height=1/3,
                     md_width_factor=0.02,
                     items_per_inch=6,
+                    gene_kwargs={},
              ):
 
         # set some defualts
@@ -1264,7 +1286,7 @@ class TreePlotter():
             max_plotted_genes = len(gene_colors)
 
         # calculate the figure and subplot sizes
-        
+
         # default figure width is bigger if we're drawing genes
         fig_width = fig_width if fig_width else (20 if draw_genes else 12)
         
@@ -1279,6 +1301,11 @@ class TreePlotter():
         tree_height = N/items_per_inch
         
         # how much vertical space for genes/tax tree?
+
+        # zero out tree height if no med plotted
+        if clade_ratio_dicts is None:
+            tax_tree_height = 0
+        
         gene_height = max_plotted_genes/items_per_inch if draw_genes else 0         
         fig_height = tree_height + max(gene_height, tax_tree_height)   
         hr_tax_tree = tax_tree_height / tree_height
@@ -1295,17 +1322,32 @@ class TreePlotter():
 
         # set up grid
         fig = plt.figure(figsize=[fig_width, fig_height], constrained_layout=False)
-        gs = fig.add_gridspec(3, 4, 
-                              width_ratios=[1, wr_genes, wr_a, wr_b],
-                              height_ratios=[hr_gene, hr_tax_tree, 1])
+        if self.is_hier: 
+            # hier tree goes on the right
+            gs = fig.add_gridspec(3, 4, 
+                                  width_ratios=[wr_genes, wr_a, wr_b, .15],
+                                  height_ratios=[hr_gene, hr_tax_tree, 1])
 
-        # create only the subplots we're going to use 
-        ax_tree = fig.add_subplot(gs[2,0])
-        ax_md1 = fig.add_subplot(gs[2,2]) if metadata_metadata else None
-        ax_md2 = fig.add_subplot(gs[2,3]) if clade_ratio_dicts else None
-        ax_tax = fig.add_subplot(gs[1,3]) if clade_ratio_dicts else None
-        ax_gene = fig.add_subplot(gs[0:2,1]) if draw_genes else None
-        ax_synt = fig.add_subplot(gs[2,1]) if draw_genes else None
+            # create only the subplots we're going to use 
+            ax_tree = fig.add_subplot(gs[2,3])
+            ax_md1 = fig.add_subplot(gs[2,1]) if metadata_metadata else None
+            ax_md2 = fig.add_subplot(gs[2,2]) if clade_ratio_dicts else None
+            ax_tax = fig.add_subplot(gs[1,2]) if clade_ratio_dicts else None
+            ax_gene = fig.add_subplot(gs[0:2,0]) if draw_genes else None
+            ax_synt = fig.add_subplot(gs[2,0]) if draw_genes else None 
+        else:
+            # tax tree goes on the left (it contains labels)
+            gs = fig.add_gridspec(3, 4, 
+                                  width_ratios=[1, wr_genes, wr_a, wr_b],
+                                  height_ratios=[hr_gene, hr_tax_tree, 1])
+
+            # create only the subplots we're going to use 
+            ax_tree = fig.add_subplot(gs[2,0])
+            ax_md1 = fig.add_subplot(gs[2,2]) if metadata_metadata else None
+            ax_md2 = fig.add_subplot(gs[2,3]) if clade_ratio_dicts else None
+            ax_tax = fig.add_subplot(gs[1,3]) if clade_ratio_dicts else None
+            ax_gene = fig.add_subplot(gs[0:2,1]) if draw_genes else None
+            ax_synt = fig.add_subplot(gs[2,1]) if draw_genes else None
         
         # display the title (differnt subplot depending on layout)
         title_ax = ax_gene if draw_genes else ax_tree        
@@ -1314,33 +1356,44 @@ class TreePlotter():
         # this is a tight layout
         plt.subplots_adjust(wspace=0, hspace=0)
 
-        y_posns = self.tree_plot(
-                    ax_tree, ax_tax, ax_md1, ax_md2, 
-                    metadata_metadata,
-                    clade_ratio_dicts,
-                    collapsed_clade_labels=collapsed_clade_labels,
-                    md_font_size=md_font_size,
-                    tree_font_size=tree_font_size,
-                    axis_font_size=axis_font_size,)
+        y_posns, thickness = self.tree_plot(
+            ax_tree, ax_tax,
+            ax_md1, ax_md2, 
+            metadata_metadata,
+            clade_ratio_dicts,
+            collapsed_clade_labels=collapsed_clade_labels,
+            md_font_size=md_font_size,
+            tree_font_size=tree_font_size,
+            axis_font_size=axis_font_size,
+        )
 
         if draw_genes:
             if not callable(draw_genes):
                 draw_genes = lambda genome: True
             
-            genome_ys = {}
-            for clade, y in y_posns.items():
-                if clade.is_terminal():
-                    # it's a terminal, eg a single genomes
-                    if draw_genes(clade) or draw_genes(clade.name):
-                        genome_ys[clade.name] = y
-                else:
-                    # add single seq at y - 1/2
-                    for leaf in clade.get_terminals():
-                        name = leaf.name
-                        # use the first one to pass muster
-                        if draw_genes(name) or draw_genes(leaf):
-                            genome_ys[name] = y - .5
-                            break
+            if self.is_hier:
+                genome_ys = y_posns
+            else:
+                genome_ys = {}
+                for clade, y in y_posns.items():
+                    if clade.is_terminal():
+                        # it's a terminal, eg a single genomes
+                        if draw_genes(clade) or draw_genes(clade.name):
+                            genome_ys[clade.name] = y
+                    else:
+                        leaves_to_draw = []
+                        for leaf in clade.get_terminals():
+                            name = leaf.name
+                            # use the first two to pass muster
+                            if draw_genes(name) or draw_genes(leaf):
+                                leaves_to_draw.append(name)
+                                if len(leaves_to_draw) > 1:
+                                    break
+                        if len(leaves_to_draw) == 1:
+                            genome_ys[leaves_to_draw[0]] = y -.5
+                        else:
+                            genome_ys[leaves_to_draw[0]] = y
+                            genome_ys[leaves_to_draw[1]] = y - 1
         
             cluster_synteny_plot(genome_ys,
                                  ax_gene, ax_synt, 
@@ -1351,8 +1404,13 @@ class TreePlotter():
                                  max_genomes=len(genome_ys),
                                  add_gene_descs=add_gene_descs,
                                  set_titles=False,
+                                 label_genomes=self.is_hier,
                                  gene_colors=gene_colors,
                                  anchor_annot=synteny_anchor_annot,
+                                 anchor_side=synteny_anchor_side,
+                                 anchor_strand=synteny_anchor_strand,
+                                 thickness=thickness / 2,
+                                 **gene_kwargs,
                                 )
             _ = ax_synt.set_ylim(*ax_tree.get_ylim())
             
@@ -1393,8 +1451,6 @@ class TreePlotter():
                   internal_ref_labels=True,
                  ):
 
-        max_depth = max(self.tree.depths().values())
-        
         if internal_ref_labels:
             def label_func(node):
                 if node.name:
@@ -1407,18 +1463,41 @@ class TreePlotter():
             label_func = str
 
         # draw tree
-        plt.rcParams["font.size"] = tree_font_size
-        y_posns = draw(self.tree,
-                       axes=ax_tree,
-                       do_show=False,
-                       label_colors=self.leaf_color_fn,
-                       collapsed_clade_labels=collapsed_clade_labels,
-                       label_func=label_func)
-        
-        _ = ax_tree.set_ylabel("Genome", fontsize=axis_font_size)
-        _ = ax_tree.set_xlabel("Branch Length", fontsize=axis_font_size)
+        if self.is_hier: 
+            # hierarchical clustering
+            
+            genomes = self.leaves
+            distances = self.tree
+            # restructure for numpy
+            genome_dists = [
+                distances.get((g1,g2), distances.get((g2,g1), 1))
+                for g1, g2
+                in combinations(genomes, 2)
+            ]
+            # draw
+            genome_linkage = linkage(genome_dists, method='ward')
+            dn = dendrogram(genome_linkage, orientation='right', ax=ax_tree)
+            x0,x1 = ax_tree.get_ylim()
+            step = (x1-x0)/len(genomes)
+            positions = numpy.arange(step/2, x1, step)
+            y_posns = {g:positions[dn['leaves'].index(i)] 
+                       for i, g in enumerate(genomes)}
+        else:
+            # Bio.Phylo tree
+            plt.rcParams["font.size"] = tree_font_size
+            y_posns = draw(self.tree,
+                           axes=ax_tree,
+                           do_show=False,
+                           label_colors=self.leaf_color_fn,
+                           collapsed_clade_labels=collapsed_clade_labels,
+                           label_func=label_func)
+            step = 1
+            _ = ax_tree.set_ylabel("Genome", fontsize=axis_font_size)
+            _ = ax_tree.set_xlabel("Branch Length", fontsize=axis_font_size)
+            max_depth = max(self.tree.depths().values())
+            _ = ax_tree.set_xlim(-.5, max_depth + 1.5)
+            
         _ = ax_tree.set_yticks([])
-        _ = ax_tree.set_xlim(-.5, max_depth + 1.5)
 
         # this may be overridden next if we have metadata
         left_most_ax = ax_tree
@@ -1429,6 +1508,7 @@ class TreePlotter():
                                metadata_metadata,
                                md_font_size=md_font_size,
                                x_labels_on_top=not bool(clade_ratio_dicts),
+                               thickness=step,
                               )
             _ = ax_md1.set_ylim(*ax_tree.get_ylim())
             left_most_ax = ax_md1
@@ -1436,11 +1516,11 @@ class TreePlotter():
         # draw taxonomic metadata
         if clade_ratio_dicts:
             clade_to_shadow, shadow_to_clade = self._find_shadow_clades(clade_ratio_dicts.keys())
-            linkage, leaf_index_dict = get_tax_linkage(self.taxonomy.root, 
+            taxlinkage, leaf_index_dict = get_tax_linkage(self.taxonomy.root, 
                                                        [clade_to_shadow.get(c,c) 
                                                         for c in clade_ratio_dicts.keys()])
             index_leaf_dict = {i:l for l,i in leaf_index_dict.items()}
-            d = dendrogram(linkage, ax=ax_tax)
+            d = dendrogram(taxlinkage, ax=ax_tax)
             order_order = [index_leaf_dict[i]
                            for i in d['leaves']]
 
@@ -1476,6 +1556,7 @@ class TreePlotter():
                                            metadata_metadata_2,
                                              y_axis_names=self.ref_names,
                                            md_font_size=md_font_size,
+                               thickness=step,
                                           )
 
 
@@ -1488,7 +1569,7 @@ class TreePlotter():
             add_label_refs(left_most_ax, y_posns, self.ref_names)
         
 
-        return y_posns
+        return y_posns, step
     
 def get_clade_lens(clade, seq_lens, filter_condition=lambda x: True):
     return numpy.array([

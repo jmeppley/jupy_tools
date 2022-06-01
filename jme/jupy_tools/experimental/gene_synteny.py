@@ -43,7 +43,7 @@ def import_genes(faa_file, annot_dict, genome_name_map=None):
                 gene_rows.append((gene, genome, gene_no, start, end, strand, annot_dict.get(gene, "")))
     return pandas.DataFrame(gene_rows, columns=['gene','genome', 'gene_no', 'start', 'end', 'strand', 'annot']).set_index('gene')
 
-def get_cluster_genes(gene_data, cluster, genome_lens):
+def get_cluster_genes(gene_data, cluster, genome_lens, ):
     """
     pulls out the annotations for the given cluster and flips annotations of any genomes that are predominantly in the reverse strand
     
@@ -58,7 +58,7 @@ def get_cluster_genes(gene_data, cluster, genome_lens):
     # select genes
     cluster_set = set(cluster)
     cluster_genes = gene_data[[g in cluster_set for g in gene_data.genome]].copy()
-    
+
     # flip genome anot strand if needed
     reverse = {genome:(cluster_genes.query(f'genome == "{genome}"') \
                          .eval('glen = strand * (end - start)') \
@@ -70,7 +70,7 @@ def get_cluster_genes(gene_data, cluster, genome_lens):
 
     return cluster_genes
 
-def get_shared_genes(gene_data, N=10):
+def get_shared_genes(gene_data, N=10, min_annot_genomes=1):
     # get the positions of the named genes
     annot_positions = defaultdict(list)
     for start, end, annot in gene_data[['start', 'end', 'annot']].values:
@@ -80,7 +80,8 @@ def get_shared_genes(gene_data, N=10):
         annot_positions[annot].append((end + start) / 2)
         
     # chose which genes to color
-    sorted_genes = sorted(annot_positions.keys(), key=lambda k: len(annot_positions[k]), reverse=True)
+    sorted_genes = sorted([g for g,ps in annot_positions.items() if len(ps) >= min_annot_genomes],
+                          key=lambda k: len(annot_positions[k]), reverse=True)
     top_N_annots = sorted_genes[:N]
     return top_N_annots
 
@@ -119,7 +120,7 @@ def plot_annot_positions(gene_data, ax=None, gene_color_dict=None, min_annot_gen
     else:
         N = len(gene_color_dict)
         n = N
-        top_N_annots = sorted(gene_color_dict.keys(),
+        top_N_annots = sorted([k for k in gene_color_dict.keys() if k in annot_positions],
                               key=lambda k: len(annot_positions[k]),
                               reverse=True)
         sorted_genes = top_N_annots
@@ -147,14 +148,22 @@ def plot_annot_positions(gene_data, ax=None, gene_color_dict=None, min_annot_gen
 def decorate_gene_labels(ax, gene_annots, desc_col):
     # add info to the gene labels
     genome_count = \
-        gene_annots.groupby(['genome','annot']).agg({'gene_no':len}).reset_index().groupby('annot').agg({'genome':len}).genome.to_dict()
+        gene_annots \
+            .groupby(['genome','annot']) \
+            .agg({'gene_no':len}) \
+            .reset_index() \
+            .groupby('annot') \
+            .agg({'genome':len}) \
+            .genome.to_dict()
+    
     if isinstance(desc_col, dict):
         vog_descs=desc_col
     else:
         vog_descs = {}
         for v,d in gene_annots[['annot',desc_col]].values:
             if pandas.notna(v):
-                vog_descs[v] = f'{d} ({v}) (in {genome_count.get(v, "unknown")} genomes)'
+                gene_id_str = f' ({v})' if re.search(v, d) is None else ''
+                vog_descs[v] = f'{d}{gene_id_str} (in {genome_count.get(v, "unknown")} genomes)'
     new_labels = []
     label_colors = []
     for label in ax.get_yticklabels():
@@ -180,10 +189,29 @@ def get_mean_midpoint(annot, gene_table):
         return None
     return numpy.mean(annot_midpoints)
 
-def align_gene_locs(my_genes, anchor_on_annot=None):
+def align_gene_locs(my_genes, anchor_on_annot=None,
+                    force_anchor_to_side=False,
+                    align_anchor_strands=None,
+                    seq_lens=None):
     """ Adjust annotation location in each genome to minimize difference 
     
-    # TODO: some genomes need to be flipped, can we do this automatically?
+        * sort genes by how common they are in given genomes
+        * Start with the most common gene (or gene provided by user)
+        * ...and shift all genomes with that gene, 
+        * so that that gene is in the same place in each.
+        * for each genome without the most common gene
+        * ...shift so that the most common gene it does have 
+        * ...is algned with average position of that gene in already shifted genomes
+        
+    params:
+        my_genes: table of gene annotations and locations
+        anchor_on_annot: if not None, use this gene instead the most abundanrt
+        force_anchor_to_side: if True, circularly permute all genomes 
+                                so that anchor gene is left-most
+        align_anhcor_strands:  if True, flip genomes so all have anchor gene in the same strand.
+                    (Defaults to True if anchor_on_annot and seq_lens specified and False if not)
+        seq_lens: Dict of genome lengths. 
+                Must be provided to force_anchor_to_side or align_anchor_strands.
     """
 
     cluster = set(my_genes.genome.values)
@@ -195,9 +223,42 @@ def align_gene_locs(my_genes, anchor_on_annot=None):
                         .agg({'strand': len}) \
                         .reset_index()\
                         .annot).most_common()
+
+    # if it didn't come as a parameter, choose an anntation to anchor on
     if not anchor_on_annot:
         anchor_on_annot = most_common_annots[0][0]
 
+    # the default of align_anchor_strands is conditional
+    if align_anchor_strands is None:
+        if anchor_on_annot is None or seq_lens is None:
+            align_anchor_strands = False
+        else:
+            # only default to True if an anchor gene provided along with genome lengths 
+            align_anchor_strands = True
+        
+    # we cannot force anchor to side or flip genomes without sequence lengths...
+    if force_anchor_to_side or align_anchor_strands:
+        if seq_lens is None:
+            raise Exception("We cannot wrap gene locations without sequence "
+                            "lengths")
+
+    if align_anchor_strands:
+        # go through genomes and flip the smaller half so all anchor genes in same strand
+        anchor_genes = my_genes.query(f'annot == "{anchor_on_annot}"')
+        anchor_strands = Counter(anchor_genes.strand.values)
+        dominant_strand = anchor_strands.most_common()[0][0]
+
+        # get set of genomes needing to be flipped
+        genomes_to_flip = set(anchor_genes[anchor_genes.strand != dominant_strand].genome.values)
+        
+        # flip genes from flagged genomes
+        my_genes[['start','end','strand']] = \
+            [((seq_lens[genome] - end, seq_lens[genome] - start, -strand)
+              if genome in genomes_to_flip
+              else (start, end, strand))
+             for (genome, start, end, strand)
+             in my_genes[['genome', 'start', 'end', 'strand']].values]
+    
     annot_midpoints = \
         my_genes.query(f"annot == '{anchor_on_annot}'") \
                 .groupby('genome') \
@@ -211,6 +272,14 @@ def align_gene_locs(my_genes, anchor_on_annot=None):
             my_genes.query(f'genome == "{genome}"') \
                     .eval(f'start = start + {shift}') \
                     .eval(f'end = end + {shift}')
+        if force_anchor_to_side:
+            # add genome length to any negative values
+            for gene, end in shifted_genome_genes['end'].items():
+                if end < 0:
+                    genome_len = seq_lens[shifted_genome_genes.genome[gene]]
+                    shifted_genome_genes.loc[gene, ['start', 'end']] = \
+                        shifted_genome_genes.loc[gene, ['start', 'end']].values \
+                            + genome_len
         if shifted_genes is not None:
             shifted_genes = shifted_genes.append(shifted_genome_genes)
         else:
@@ -238,7 +307,8 @@ def align_gene_locs(my_genes, anchor_on_annot=None):
                 annot_midpoint = get_first_midpoint(genome_genes.query(f"annot == '{annot}'"))
                 shifts.append(shifted_midpoint - annot_midpoint)
         if len(shifts) == 0:
-            raise Exception(f"No common annots in genome: {genome}")
+            # just left align it
+            shifts = [genome_genes.start.min() - shifted_genes.start.min(),]
             
         shift = numpy.mean(numpy.array(shifts))
 
