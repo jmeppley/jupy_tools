@@ -97,6 +97,17 @@ def dotplot(qhits, ax=None, subplots_kws=None, seq_length=None, **plot_kwargs):
             **plot_kwargs
         )
 
+def save_fig_to_pdf(fig, fname, **kwargs):
+    from matplotlib.backends.backend_pdf import PdfPages
+    from matplotlib import pyplot as plt
+    pdf_file = fname
+    pdf = PdfPages(pdf_file)
+
+    pdf.savefig(figure=fig, bbox_inches='tight')
+    plt.close()
+
+    pdf.close()
+
 def _print(msg, format_variables):
     if format_variables is None:
         print(msg)
