@@ -85,6 +85,8 @@ def dotplot(qhits, ax=None, subplots_kws=None, seq_length=None, **plot_kwargs):
             subplots_kws = {}
         subplots_kws.setdefault("figsize", [8, 8])
         fig, ax = plt.subplots(1, 1, **subplots_kws)
+    if seq_length == False:
+        seq_length = 1
     if seq_length is None:
         seq_length = qhits.mlen.max()
 
