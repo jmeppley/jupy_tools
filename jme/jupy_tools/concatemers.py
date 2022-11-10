@@ -157,6 +157,11 @@ def find_cmer_stats_clust(
     linkage="average",
     min_repeat_frac=0.5,
 ):
+    """
+    Translates hits into ranks: (how much the hit is off set from the full self hit)
+    Uses agglomeraative clustering to group hit fragments that represent the same rank
+    Finds the median distance bwetween adjacent ranks
+    """
     from sklearn.cluster import AgglomerativeClustering
     from sklearn.preprocessing import StandardScaler
 
@@ -239,6 +244,7 @@ def get_seq_length(qhits, seq_length):
         return qhits.qend.values.max()
 
 def make_presence_array(hit_range, size):
+    """ make a binary mask (array of 1s and 0s) of length size with 1s inside hit_range """ 
     start, end = sorted(hit_range)
     start = 1 if start <= 1 else int(start)
     if start > size:
@@ -262,6 +268,14 @@ def make_presence_array(hit_range, size):
 
 
 def get_score(qhits, repeat_size, qlen=None, width=0.1):
+    """  Evaluate the calculated repeat size, given actual hits.
+    
+    Add up the length of all the hits in the first offset (rank == repeat size +/- 5%).
+    
+    In a perfect example, this would equal the read length - repeat size. 
+    
+    Return the fraction actually coverred.      
+    """
     if qlen is None:
         qlen = qhits.mlen.max()
     qhits = qhits.query("((hend - hstart) > 0) == ((qend - qstart) > 0)")
