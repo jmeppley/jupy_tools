@@ -293,6 +293,7 @@ def plot_hits_colored_py_pos(
     ax.set_yticks(sorted(set(key_positions.values())))
     return key_positions
 
+cigar_segment_rexp = re.compile(r'(\d+)([A-Z])')
 
 def get_diffs(cigar_string, query_seq, hit_start, hit_end, hit_seq, debug=False):
     """ generates a tuple for each position in the alignment where the sequences differ 
@@ -334,7 +335,10 @@ def get_diffs(cigar_string, query_seq, hit_start, hit_end, hit_seq, debug=False)
 
 def get_hit_pctids(hit_start, hit_end, diffs, N):
     diff_iter = iter(diffs)
-    next_diff = next(diff_iter)
+    try:
+        next_diff = next(diff_iter)
+    except StopIteration:
+        next_diff = None
     mlen = hit_end + 1 - hit_start
     region_length = mlen / N  # NOT a integer!
     for hpos in numpy.arange(hit_start - 1, hit_end, region_length):

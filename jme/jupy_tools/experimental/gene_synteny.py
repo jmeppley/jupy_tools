@@ -182,7 +182,7 @@ def get_first_midpoint(gene_table):
 
 def get_mean_midpoint(annot, gene_table):
     annot_midpoints = \
-        gene_table.query(f"annot == '{annot}'") \
+        gene_table.query(f'annot == "{annot}"') \
                   .groupby('genome') \
                   .apply(get_first_midpoint)
     if annot_midpoints.shape[0] == 0:
@@ -304,7 +304,8 @@ def align_gene_locs(my_genes, anchor_on_annot=None,
                         continue
                     shifted_midpoints[annot] = shifted_midpoint
 
-                annot_midpoint = get_first_midpoint(genome_genes.query(f"annot == '{annot}'"))
+                annot_midpoint = get_first_midpoint(
+                    genome_genes.query(f'annot == "{annot}"'))
                 shifts.append(shifted_midpoint - annot_midpoint)
         if len(shifts) == 0:
             # just left align it

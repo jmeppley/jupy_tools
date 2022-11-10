@@ -9,14 +9,32 @@ import logging
 class TaxonomicDatabase:
     """ Object representing a sequence db with taxonomic info. EG RefSeq """
 
-    def __init__(self, db_path):
-        """ Loads the db files into RAM """
+    def __init__(self, *db_path):
+        """ Loads the db files into RAM 
+
+        Arguments can be a single db prefix of a fully formd py-metagenomics db:
+
+         EG: /mnt/seqdbs/RefSeq/200/RefSeq.ldb/lastdb
+         where the files are:
+            taxid map: {prefix}.tax
+            taxdump dir: dirname(prefix)
+
+        Or two paths:
+
+            taxid_map location
+            taxdump dir
+
+        """
         self.db_path = db_path
-        self.db_dir = os.path.dirname(db_path)
-        self.db_taxid_map = db_path + ".tax"
-        self.db_desc_map = db_path + ".ids"
+        if isinstance(db_path, str) or len(db_path) == 1:
+            if not isinstance(db_path, str):
+                db_path = next(iter(db_path))
+
+            self.db_dir = os.path.dirname(db_path)
+            self.db_taxid_map = db_path + ".tax"
+        else:
+            self.db_taxid_map , self.db_dir = db_path
         self.taxonomy = edltaxon.readTaxonomy(self.db_dir)
-        self.desc_map = util.parseMapFile(self.db_desc_map)
         self.taxid_map = util.parseMapFile(self.db_taxid_map, valueType=int)
 
     def find_missing_taxids(self):
@@ -92,8 +110,10 @@ def lookup_new_taxids(old_taxids, database=None, sleep=0, email="jmeppley@hawaii
             r = handle.read()
             m = re.search(r"AkaTax.+\>(\d+)\<\/Item", r)
             if m:
-                new_taxid[taxid] = int(m.group(1))
-                continue
+                aka_taxid = int(m.group(1))
+                if aka_taxid != 0:
+                    new_taxid[taxid] = aka_taxid
+                    continue
 
             if database is None:
                 continue

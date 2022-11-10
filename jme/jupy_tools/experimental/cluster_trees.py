@@ -563,8 +563,8 @@ def draw(
     # For power users
     axes=None,
     branch_labels=None,
-    branch_label_x_delta=0,
-    branch_label_y_delta=-.25,
+    branch_label_x_delta=0.025,
+    branch_label_y_delta=0.25,
     label_colors=None,
     collapsed_clade_labels=None,
     collapsed_clade_heights=None,
@@ -916,20 +916,20 @@ def draw(
             color=color,
             lw=lw,
         )
-        # Add label above the branch (optional)
-        conf_label = format_branch_label(clade)
-        if conf_label:
-            axes.text(
-                #0.5 * (x_start + x_here),
-                x_here,
-                y_here,
-                conf_label,
-                fontsize="small",
-                #horizontalalignment="center",
-                horizontalalignment="right",
-                verticalalignment='bottom',
-            )
         if clade not in collapsed_clade_heights:
+            # Add label above the branch (optional)
+            conf_label = format_branch_label(clade)
+            if conf_label:
+                axes.text(
+                    #0.5 * (x_start + x_here),
+                    x_here - branch_label_x_delta,
+                    y_here - branch_label_y_delta,
+                    conf_label,
+                    fontsize="small",
+                    #horizontalalignment="center",
+                    horizontalalignment="right",
+                    verticalalignment='bottom',
+                )
             # Add node/taxon labels
             label = label_func(clade)
             if label not in (None, clade.__class__.__name__):
@@ -1162,16 +1162,32 @@ def cluster_synteny_plot(genome_y_vals, ax1, ax2,
     # ax2.autoscale() ## call autoscale if needed
     
     if isinstance(gene_colors, dict):
-        syn_kwargs = dict(gene_color_dict=gene_colors)
+        if not isinstance(max_plotted_genes, int):
+            # instead of a number of genes, it can be a list/set
+            # to subset the color dict
+            gene_synteny_colors = {
+                g:c
+                for g,c in gene_colors.items()
+                if g in max_plotted_genes
+            }
+            max_plotted_genes = len(gene_synteny_colors)
+        else:
+            gene_synteny_colors = gene_colors
+        syn_kwargs = dict(gene_color_dict=gene_synteny_colors)
     else:
         syn_kwargs = dict(gene_cmap=gene_colors)
 
-    top_annots, gene_colors = gene_synteny.plot_annot_positions(shifted_genes, 
-                                                                ax=ax1, 
-                                                                max_colored_genes=max_colored_genes,
-                                                                max_plotted_genes=max_plotted_genes,
-                                                                **syn_kwargs
-                                                               )
+        
+    top_annots, calculated_gene_colors = \
+        gene_synteny.plot_annot_positions(
+            shifted_genes, 
+            ax=ax1, 
+            max_colored_genes=max_colored_genes,
+            max_plotted_genes=max_plotted_genes,
+            **syn_kwargs        
+    )
+    if not isinstance(gene_colors, dict):
+        gene_colors = calculated_gene_colors
     n_genes = len(ax1.get_yticks())
     
     if set_titles:
@@ -1202,6 +1218,7 @@ def cluster_synteny_plot(genome_y_vals, ax1, ax2,
     else:
         _ = ax2.set_yticks([])
 
+    return shifted_genes, gene_colors
 
 def get_tree_plotter_data(genomes_tsv, 
                           genes_tsv,
@@ -1279,11 +1296,14 @@ class TreePlotter():
                     md_width_factor=0.02,
                     items_per_inch=6,
                     gene_kwargs={},
+                    tree_kwargs={},
              ):
 
         # set some defualts
-        if isinstance(gene_colors, dict) and len(gene_colors) < max_plotted_genes:
-            max_plotted_genes = len(gene_colors)
+        n_genes = max_plotted_genes if isinstance(max_plotted_genes, int) \
+                  else len(max_plotted_genes)
+        if isinstance(gene_colors, dict) and len(gene_colors) < n_genes:
+            n_genes = len(gene_colors)
 
         # calculate the figure and subplot sizes
 
@@ -1306,7 +1326,7 @@ class TreePlotter():
         if clade_ratio_dicts is None:
             tax_tree_height = 0
         
-        gene_height = max_plotted_genes/items_per_inch if draw_genes else 0         
+        gene_height = n_genes/items_per_inch if draw_genes else 0         
         fig_height = tree_height + max(gene_height, tax_tree_height)   
         hr_tax_tree = tax_tree_height / tree_height
         hr_gene = 0 \
@@ -1365,6 +1385,7 @@ class TreePlotter():
             md_font_size=md_font_size,
             tree_font_size=tree_font_size,
             axis_font_size=axis_font_size,
+            **tree_kwargs,
         )
 
         if draw_genes:
@@ -1449,6 +1470,7 @@ class TreePlotter():
                   axis_font_size=10,
                   md_font_size=9,
                   internal_ref_labels=True,
+                  **kwargs,
                  ):
 
         if internal_ref_labels:
@@ -1490,7 +1512,7 @@ class TreePlotter():
                            do_show=False,
                            label_colors=self.leaf_color_fn,
                            collapsed_clade_labels=collapsed_clade_labels,
-                           label_func=label_func)
+                           label_func=label_func, **kwargs)
             step = 1
             _ = ax_tree.set_ylabel("Genome", fontsize=axis_font_size)
             _ = ax_tree.set_xlabel("Branch Length", fontsize=axis_font_size)
@@ -1852,8 +1874,8 @@ def draw_polar(
             ## TODO: polar!
             axes.text(
                 #0.5 * (x_start + x_here),
-                x_here,
-                y_here,
+                x_here - branch_label_x_delta,
+                y_here + branch_label_y_delta,
                 conf_label,
                 fontsize="small",
                 #horizontalalignment="center",
