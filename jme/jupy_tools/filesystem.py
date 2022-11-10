@@ -105,9 +105,11 @@ def glob_wildcards(template, constraints=None, as_tuple=False, debug=False):
     
     # create named tuple class for returned data
     if as_tuple:
-        Wildcards = namedtuple(
-            "Wildcards", list(set(m.group(1) for m in TEMPLATE_REXP.finditer(template)))
-        )
+        wc_names = []
+        for m in TEMPLATE_REXP.finditer(template):
+            if m not in wc_names:
+                wc_names.append(m.group(1))
+        Wildcards = namedtuple("Wildcards", wc_names)
 
     # loop over matched files
     for glob_file in glob.glob(glob_string):
