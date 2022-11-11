@@ -144,7 +144,7 @@ def human_readable_bytes(byt):
         illion = 20 // 3
     else:
         mag3 = (magnitude + 1) % 3
-        float_fmt = "%" + str(mag3) + "." + str(3 - mag3) + "f"
+        float_fmt = "%" + str(mag3) + "." + str(2 - mag3) + "f"
         illion = (magnitude + 1) // 3
     format_str = float_fmt + ["", "K", "M", "G", "T", "P", "E"][illion]
     return (format_str % (byt * 1.0 / (1024 ** illion))).lstrip("0")

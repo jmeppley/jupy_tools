@@ -29,5 +29,14 @@ def test_glob_wildcards_tuple():
     assert suff == fs_wc.suff
     assert suff == "test"
 
-    
-
+def test_human_readable_bytes():
+    for val, code in [
+        (2, "2"),
+        (54, "54"),
+        (243, ".24K"),
+        (59049, "58K"),
+        (4782969, "4.6M"),
+        (7625597484987, "6.9T"),
+        (150094635296999121, ".13E")
+    ]:
+        assert code == filesystem.human_readable_bytes(val)
