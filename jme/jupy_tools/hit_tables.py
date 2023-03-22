@@ -154,6 +154,10 @@ def parse_blast_m8(hit_table, format=BLAST, skiprows=0, pair_overlap_buffer=-1, 
             skiprows=skiprows,
         )
     
+    if hits.shape[0] == 0:
+        ## if there are no hits, return None
+        return None
+    
     # format specific tweaks
     if format == LASTAL:
         hits['qsmult'] = [1 if qs == '+' else -1 
@@ -165,6 +169,7 @@ def parse_blast_m8(hit_table, format=BLAST, skiprows=0, pair_overlap_buffer=-1, 
                         for blocks in hits.match_string]
         hits['evalue'] = [float(re.sub('E=','',str(e)))
                           for e in hits['e']]
+        
     if format in [PAF, PAF_ALL]:
         # calculate pctid
         hits = hits.eval('pctid = 100 * matches / mlen')
@@ -316,5 +321,8 @@ def agg_hit_table(hit_table, ovl_buffer=0, max_hit_fragments=0, **parse_args):
      * max_hit_fragments: only merge the N best fragments (unlimited)
     """
     non_ovl_hits = parse_blast_m8(hit_table, pair_overlap_buffer=ovl_buffer, **parse_args)
+    
+    if non_ovl_hits is None:
+        return None
 
     return agg_hit_df(non_ovl_hits, max_hit_fragments)

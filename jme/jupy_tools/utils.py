@@ -7,13 +7,15 @@ from collections import defaultdict
 from  Bio import SeqIO
 from matplotlib import pyplot as plt
 
-def parse_eggnog_annotations(eggnog_annot_file, skiprows=4):
+def parse_eggnog_annotations(eggnog_annot_file, skiprows=4,
+                             ogs_col='eggNOG_OGs'):
     """
     Parse the eggnog annotations into a pandas.DataFrame.
     
     It takes two steps because the headers are commented out and there is a bunch of commented out stuff at the end we don't want.
     
-    This function also pulls out the most general and most specific OG from the OGs column.
+    This function also pulls out the most general and most specific OG from the
+    OGs column. (Skip if ogs_col is None)
     
     params:
         skiprows: the number of commented lines before the header line
@@ -30,9 +32,12 @@ def parse_eggnog_annotations(eggnog_annot_file, skiprows=4):
     eggnog_annots = read_tsv(eggnog_annot_file, comment="#", header=None, 
                              names=eggnog_annot_cols)
 
-    # parse the OGs column, pulling out the root OG and the most tax-specific OG
-    eggnog_annots['root_og'] = [ogs.split(",")[0].split("@")[0] for ogs in eggnog_annots.eggNOG_OGs]
-    eggnog_annots['tax_og'] = [ogs.split(",")[-1].split("@")[0] for ogs in eggnog_annots.eggNOG_OGs]
+    if ogs_col is not None:
+        # parse the OGs column, pulling out the root OG and the most tax-specific OG
+        eggnog_annots['root_og'] = [ogs.split(",")[0].split("@")[0]
+                                    for ogs in eggnog_annots[ogs_col]]
+        eggnog_annots['tax_og'] = [ogs.split(",")[-1].split("@")[0]
+                                   for ogs in eggnog_annots[ogs_col]]
     
     return eggnog_annots
 

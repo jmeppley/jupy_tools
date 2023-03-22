@@ -93,7 +93,7 @@ def plot_annot_positions(gene_data, ax=None, gene_color_dict=None, min_annot_gen
         gene_data:
             DataFrame of annotations for the selected genomes
             columns: gene(index), genome, start, end, strand, annot
-            
+        ax: matplotlib axes to draw in. Creates a new figure by default. Set to False to skip plotting and just get the top gene list    
         gene_color_dict:
             dict with genes to plot and their colors. Otherwise, use the most common
     """
@@ -130,19 +130,21 @@ def plot_annot_positions(gene_data, ax=None, gene_color_dict=None, min_annot_gen
     sorted_annot = sorted(list(sorted_genes)[:n], 
                        key=lambda p: numpy.median(list(annot_positions[p])))
     
-    # scatter positions, one row per gene
-    i = 0
-    for i, p in enumerate(sorted_annot):
-        x,y = zip(*((gp,i) for gp in annot_positions[p]))
-        ax.scatter(x,y, 
-                   c=(len(y) * [to_rgba(gene_color_dict.get(p, BLACK)),]),
-                   ec=None, alpha=.5)
-    _ = ax.set_yticks(range(len(sorted_annot)))
-    ytl = ax.set_yticklabels(sorted_annot)
-    for label in ytl:
-        # this error throws a numpy warning and I can't make it stop
-        label.set_color(to_rgba(gene_color_dict.get(label.get_text(), BLACK)))
-    _ = ax.set_ylim(-y_buff, i + y_buff)
+    # set ax to False to skip plotting
+    if ax != False:
+        # scatter positions, one row per gene
+        i = 0
+        for i, p in enumerate(sorted_annot):
+            x,y = zip(*((gp,i) for gp in annot_positions[p]))
+            ax.scatter(x,y, 
+                       c=(len(y) * [to_rgba(gene_color_dict.get(p, BLACK)),]),
+                       ec=None, alpha=.5)
+        _ = ax.set_yticks(range(len(sorted_annot)))
+        ytl = ax.set_yticklabels(sorted_annot)
+        for label in ytl:
+            # this error throws a numpy warning and I can't make it stop
+            label.set_color(to_rgba(gene_color_dict.get(label.get_text(), BLACK)))
+        _ = ax.set_ylim(-y_buff, i + y_buff)
     return top_N_annots, gene_color_dict
 
 def decorate_gene_labels(ax, gene_annots, desc_col):
@@ -189,11 +191,46 @@ def get_mean_midpoint(annot, gene_table):
         return None
     return numpy.mean(annot_midpoints)
 
+def align_gene_locs_new(my_genes, annots):
+    """
+    given a gene table and a list or set of annotations, try to align genomes
+
+    if colleciton of annots is empty,use all annotations.
+    """
+    if len(annots) > 0:
+        annots = set(annots)
+        my_genes_filtered = my_genes[[a in annots for a in my_genes.annot]]
+    else:
+        my_genes_filtered = my_genes
+
+    # get median position of each annot
+    annot_posns = defaultdict(list)
+    for annot, start, end in my_genes_filtered[['annot', 'start', 'end']].values:
+        annot_posns[annot].append((end + start)/2)
+    annot_median_posns = {a:numpy.median(posns) for a, posns in annot_posns.items()}
+
+    # for each genome, get the median value accross annots for how far annot is from annot median
+    genome_displacements = {}
+    for genome, genome_genes in my_genes_filtered.groupby('genome'):
+        displacements = []
+        for annot, start, end in genome_genes[['annot', 'start', 'end']].values:
+            displacements.append(annot_median_posns[annot] - (end + start)/2)
+        genome_displacements[genome] = numpy.median(displacements)
+
+
+    # edit the table
+    for gene, genome in my_genes.genome.items():
+        my_genes.loc[gene, ['start', 'end']] += genome_displacements[genome]
+
+    return my_genes
+
 def align_gene_locs(my_genes, anchor_on_annot=None,
                     force_anchor_to_side=False,
                     align_anchor_strands=None,
                     seq_lens=None):
     """ Adjust annotation location in each genome to minimize difference 
+
+        Orignal method (focus on "anchor" gene)
     
         * sort genes by how common they are in given genomes
         * Start with the most common gene (or gene provided by user)
@@ -203,9 +240,18 @@ def align_gene_locs(my_genes, anchor_on_annot=None,
         * ...shift so that the most common gene it does have 
         * ...is algned with average position of that gene in already shifted genomes
         
+        Multi-gene method (provide list of anchor genes)
+
+        * calculate the median posittion for each anchor annotatino
+        * for each genome, calculate the distance of each anchor annot from overall median positions
+        * shitf whold genome by the median anchor annot distance
+
     params:
         my_genes: table of gene annotations and locations
-        anchor_on_annot: if not None, use this gene instead the most abundanrt
+        anchor_on_annot: 
+            None (default): use the most common gene
+            str: use this gene instead the most abundanrt
+            list/set: use these genes in unison
         force_anchor_to_side: if True, circularly permute all genomes 
                                 so that anchor gene is left-most
         align_anhcor_strands:  if True, flip genomes so all have anchor gene in the same strand.
@@ -213,6 +259,13 @@ def align_gene_locs(my_genes, anchor_on_annot=None,
         seq_lens: Dict of genome lengths. 
                 Must be provided to force_anchor_to_side or align_anchor_strands.
     """
+
+    if (not isinstance(anchor_on_annot, str)) and (anchor_on_annot is not None):
+        # use new method
+        if force_anchor_to_side or align_anchor_strands:
+            raise Exception("Cannot align on multiple anchors, force_anchor_to_side and aling_ancor_strands must be False")
+
+        return align_gene_locs_new(my_genes, anchor_on_annot)
 
     cluster = set(my_genes.genome.values)
     

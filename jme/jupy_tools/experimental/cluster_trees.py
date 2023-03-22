@@ -1,3 +1,55 @@
+"""
+
+Collection of tools for making my multi-panel tree and gene-synteny plots.
+
+Includes methods for making trees, both phylogenitic and distance based dendrograms.
+
+def cat_tree_dir_alignment(aln_files_by_vog, **kwargs):
+    concatenates multiple single-gene protein alignemnts into one big alignment
+
+
+def filter_cat_alignment(cat_alignment, genome_residue_frac=.05, residue_genome_frac=.5):
+    Filters genomes and residues from an MSA:
+        First, drops residues with < 50% of genomes
+        Srcond, drops genomes with < 5% of residues
+
+def get_genes_from_genomes(gene_table, genomes, column='genome'):
+    Filters given pandas DataFrame to only include listed items in a colomn
+
+class TreeBuilder()
+    class for picking shared genes for tree building from a set of genomes
+    def get_tree_genes()
+        pick genes for a set of genomes
+    def expand_tree_genomes()
+        look for other genomes with these genes to include in a tree
+    def pull_vogs()
+        get the protein sequences from the selected genes and genomes into faa files
+
+class TreeMetadata()
+    holds metadata for right-hand-side metadata in TreePlotter plots
+
+def draw()
+    modified version of Bio.Phylo tree drawing. only used internally
+
+def generate_collapsed_nodes()
+    Automatically select nodes to collapse (to fit a big tree into one plot)
+
+def cluster_synteny_plot()
+    draws the two-panel synenty plots at the core of my bigger plots
+        top: locations for each gene
+        bottom: gene map, one geneome per line
+
+def get_tree_plotter_data()
+    convenience function for reading much of the data for the tree plots
+
+class TreePlotter()
+    makes the big plots with gene synteny tied to a genome tree and metadata bars
+    def master_plot()
+
+def draw_polar()
+    a modified Bio.Phylo.draw() that can make a circular tree with collapsed branches
+
+"""
 
 import re, numpy, pandas, os
 import attr
@@ -109,7 +161,7 @@ def filter_cat_alignment(cat_alignment, genome_residue_frac=.05, residue_genome_
                 if c in {'.', '-'}:
                     align_gap_count += 1
                 new_seq += c
-        if .95 < align_gap_count / len(new_seq):
+        if len(new_seq) == 0 or ((1 - genome_residue_frac) < (align_gap_count / len(new_seq))):
             # skip if genomes has < 5% of residues
             continue
 
@@ -451,7 +503,7 @@ class TreeMetadata():
         return self.get_color(self.data_dict.get(item, self.null_value))
 
 
-def draw_tree_metadata(ax, y_posns, metadata_metadata, md_font_size=7, x_labels_on_top=False, thickness=1):
+def draw_tree_metadata(ax, y_posns, metadata_metadata, md_font_size=7, x_labels_on_top=False, thickness=1, collapsed_clade_heights=defaultdict(lambda: 2)):
     """
     Draw metadata columns
     
@@ -475,7 +527,7 @@ def draw_tree_metadata(ax, y_posns, metadata_metadata, md_font_size=7, x_labels_
             height = thickness
             node = node.name
         else:
-            height = thickness * 2
+            height = thickness * collapsed_clade_heights[node]
         nodes.append(node)
         heights.append(height)
         bottom = top - height
@@ -534,7 +586,10 @@ def add_label_refs(ax, y_positions, y_axis_names=None, **kwargs):
 
     ticks, labels = [], []
     for node in y_positions:
-        if node.is_terminal():
+        if isinstance(node, str):
+            height = 1
+            genome = node
+        elif node.is_terminal():
             height = 1
             genome = node.name
         else:
@@ -1130,7 +1185,8 @@ def generate_collapsed_nodes(tree, cluster_dict,
             # don't use its leaves in any other returned clades
             collapsed_leaves.update(leaves)
             
-def cluster_synteny_plot(genome_y_vals, ax1, ax2, 
+def cluster_synteny_plot(genome_y_vals,
+                         ax1, ax2, 
                          genome_lens, 
                          gene_table,
                          genome_2_subcluster=None,
@@ -1145,6 +1201,7 @@ def cluster_synteny_plot(genome_y_vals, ax1, ax2,
                          anchor_annot=None,
                          anchor_side=None,
                          anchor_strand=None,
+                         gene_plot_range=None,
                          **kwargs,
                         ):
     
@@ -1176,7 +1233,6 @@ def cluster_synteny_plot(genome_y_vals, ax1, ax2,
         syn_kwargs = dict(gene_color_dict=gene_synteny_colors)
     else:
         syn_kwargs = dict(gene_cmap=gene_colors)
-
         
     top_annots, calculated_gene_colors = \
         gene_synteny.plot_annot_positions(
@@ -1189,7 +1245,7 @@ def cluster_synteny_plot(genome_y_vals, ax1, ax2,
     if not isinstance(gene_colors, dict):
         gene_colors = calculated_gene_colors
     n_genes = len(ax1.get_yticks())
-    
+
     if set_titles:
         ax1.set_title(f"top {n_genes} annots of {len(set(shifted_genes.annot.values)) - 1}")
 
@@ -1198,7 +1254,7 @@ def cluster_synteny_plot(genome_y_vals, ax1, ax2,
                        if re.search(r'^desc(ription)?$', c, flags=re.I)]
         if len(desc_columns) >= 1:
             add_gene_descs = desc_columns[-1]
-    if isinstance(add_gene_descs, str) or isinstance(add_gene_descs, dict):
+    if isinstance(add_gene_descs, str) or isinstance(add_gene_descs, dict) or callable(add_gene_descs):
         gene_synteny.decorate_gene_labels(ax1, my_genes, add_gene_descs)
     
     plotted_reads = gene_synteny.draw_genes(shifted_genes, gene_colors, 
@@ -1217,6 +1273,10 @@ def cluster_synteny_plot(genome_y_vals, ax1, ax2,
                 label.set_color(subcluster_colors.get(g,'black'))
     else:
         _ = ax2.set_yticks([])
+ 
+    if gene_plot_range is not None:
+        ax1.set_xlim(gene_plot_range)
+        ax2.set_xlim(gene_plot_range)
 
     return shifted_genes, gene_colors
 
@@ -1298,6 +1358,16 @@ class TreePlotter():
                     gene_kwargs={},
                     tree_kwargs={},
              ):
+
+        """
+        Do the work!
+
+        params:
+            draw_genes:
+                False (default): only draw tree and metadata
+                True: Draw synteny plot over aligned genome maps
+                callabale: pick representatives of clades to draw using draw_genes() as the sorting key. This let's you chose the best representatives for collapsed clades.
+        """
 
         # set some defualts
         n_genes = max_plotted_genes if isinstance(max_plotted_genes, int) \
@@ -1402,19 +1472,20 @@ class TreePlotter():
                         if draw_genes(clade) or draw_genes(clade.name):
                             genome_ys[clade.name] = y
                     else:
-                        leaves_to_draw = []
-                        for leaf in clade.get_terminals():
-                            name = leaf.name
-                            # use the first two to pass muster
-                            if draw_genes(name) or draw_genes(leaf):
-                                leaves_to_draw.append(name)
-                                if len(leaves_to_draw) > 1:
-                                    break
-                        if len(leaves_to_draw) == 1:
-                            genome_ys[leaves_to_draw[0]] = y -.5
-                        else:
-                            genome_ys[leaves_to_draw[0]] = y
-                            genome_ys[leaves_to_draw[1]] = y - 1
+                        clade_height = tree_kwargs.get('collapsed_clade_heights',
+                                                       defaultdict(lambda: 2))[clade]
+                        leaves_to_draw = sorted(
+                            [leaf.name
+                             for leaf in clade.get_terminals()],
+                            key=draw_genes,
+                            reverse=True,
+                        )[:int(numpy.floor(clade_height))]
+
+                        pad = (clade_height - len(leaves_to_draw)) / 2
+                        next_y = y - pad - .5
+                        for l in leaves_to_draw:
+                            genome_ys[l] = next_y
+                            next_y -= 1
         
             cluster_synteny_plot(genome_ys,
                                  ax_gene, ax_synt, 
@@ -1469,9 +1540,17 @@ class TreePlotter():
                   tree_font_size=7,
                   axis_font_size=10,
                   md_font_size=9,
-                  internal_ref_labels=True,
+                  internal_ref_labels=None,
                   **kwargs,
                  ):
+
+        if internal_ref_labels is None:
+            if self.is_hier:
+                # default for hierachical trees is external ref labels
+                internal_ref_labels = False
+            else:
+                # default for phylo trees is internal ref labels
+                internal_ref_labels = True
 
         if internal_ref_labels:
             def label_func(node):
@@ -1522,7 +1601,7 @@ class TreePlotter():
         _ = ax_tree.set_yticks([])
 
         # this may be overridden next if we have metadata
-        left_most_ax = ax_tree
+        right_most_ax = ax_tree
         
         # draw simple metadata
         if metadata_metadata:
@@ -1531,9 +1610,14 @@ class TreePlotter():
                                md_font_size=md_font_size,
                                x_labels_on_top=not bool(clade_ratio_dicts),
                                thickness=step,
+                               collapsed_clade_heights=kwargs.get(
+                                   "collapsed_clade_heights",
+                                   defaultdict(lambda: 2)
+                               ),
                               )
             _ = ax_md1.set_ylim(*ax_tree.get_ylim())
-            left_most_ax = ax_md1
+            if not self.is_hier: 
+                right_most_ax = ax_md1
 
         # draw taxonomic metadata
         if clade_ratio_dicts:
@@ -1584,11 +1668,12 @@ class TreePlotter():
 
 
             _ = ax_md2.set_ylim(*ax_tree.get_ylim())
-            left_most_ax = ax_md2
+            if not self.is_hier: 
+                right_most_ax = ax_md2
             
         # label left side of left-most subplot with ref names
         if self.ref_names and not internal_ref_labels:
-            add_label_refs(left_most_ax, y_posns, self.ref_names)
+            add_label_refs(right_most_ax, y_posns, self.ref_names)
         
 
         return y_posns, step
@@ -1961,3 +2046,4 @@ def draw_polar(
         plt.show()
         
     return {t:y_posns[t] for t in terminals}
+
