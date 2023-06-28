@@ -21,30 +21,90 @@ Notes:
  * activate(env) does not change the python module path by default, but it can (see docs)
 
 """
-# remove anything conda or jupyter related from the path, and add conda from my lysine folder
-#  then save to the kernel's env
+
 import sys, os, re
 import subprocess
 
-CONDA_BASE_DIR = "/mnt/lysine/jmeppley/miniconda"
-OTHER_CONDA_DIRS = [
-    "/data/jmeppley/miniconda3",
-]
+## Start with a hack for a special case that I come across often:
+#    module being imported to a jupyter env that is run in a custom conda environment
+#    BUT: the shell path doesn't reflect the env
+#  So:
+#   Figure out what env it is from the python path
+#   Update the shell path
+
+# these will be set at the end of loading, but should be constants after that
+CONDA_BIN_DIR = None
 ENVS = {}
-for base_dir in [CONDA_BASE_DIR] + OTHER_CONDA_DIRS:
-    for d in os.listdir(f"{base_dir}/envs"):
-        if os.path.isdir(f"{base_dir}/envs/{d}/bin"):
-            ENVS[d] = f"{base_dir}/envs/{d}"
-NON_CONDA_PATH = [
+
+# save the shell path that's not part of conda or jupyter
+NON_CONDA_SHELL_PATH = [
     p
     for p in os.environ["PATH"].split(":")
     if re.search(r"(jupyter|conda)", p, re.I) is None
 ]
+# save the original python path
 ORIG_PATH = sys.path
+
+# keep track of (de)activations
 PREVIOUS_ENVS = []
+active_env = None
+
 MODULE_PATH = os.path.dirname(os.path.abspath(__file__))
 
-active_env = None
+
+# Functions for inspecting the local conda setup
+def get_conda_bin_path():
+    # is conda in the path?
+    try:
+        conda_path = subprocess.check_output(['which', 'conda'], ).rstrip()
+    except CalledProcessError:
+        # conda not installed in this shell
+        return None
+    
+    try:
+        # subprocess usually returns a byte string, decode it
+        conda_path = conda_path.decode()
+    except AttributeError:
+        # It was already a str
+        pass
+    
+    # we want the bin dir, not the full path to the conda executable
+    return os.path.dirname(conda_path)
+
+def discover_named_envs():
+    env_bytes = subprocess.check_output(['conda', 'info', '--envs'])
+    if isinstance(env_bytes, bytes):
+        env_bytes = env_bytes.decode()
+    for line in env_bytes.split("\n"):
+        # skip comments
+        if line.startswith("#"):
+            continue
+        if len(line.strip()) == 0:
+            continue
+        m = re.search(
+            r'^(\S*)\s+\*?\s+(/.+)$',
+            line
+        )
+        if m:
+            name, path = m.groups()
+            if len(name) > 0:
+                ENVS[name] = path.strip()
+            else:
+                name = guess_env_name(path)
+                if name is not None and name not in ENVS:
+                    ENVS[name] = path
+
+def guess_env_name(env_path):
+    dname, bname = os.path.split(env_path)
+    # skip snakemake envs
+    if re.search('snakemake', dname, re.I):
+        return None
+    # if "conda" is in the name of the parent folder
+    if re.search('conda', os.path.basename(dname), re.I):
+        # use the base name
+        return bname
+    return None
+
 
 def list_envs():
     return list(ENVS)
@@ -52,7 +112,7 @@ def list_envs():
 def get_active_env():
     return active_env
 
-def activate(env, set_python_path=False, set_shell_path=True):
+def activate(env, set_python_path=False, set_shell_path=True, debug=False):
     """
     This "activates" a requested conda environment. By default, the activation
     is only partial and only affects the shell's PATH environment variable
@@ -82,7 +142,9 @@ def activate(env, set_python_path=False, set_shell_path=True):
             # if it's a path, it must have a bin dir
             raise Exception(f"Cannot find env: {env}")
     # add notebook's base dir as a fall back for shell PATH
-    env_dirs = [env, CONDA_BASE_DIR]
+    env_dirs = [env, ]
+    if CONDA_BIN_DIR is not None:
+        env_dirs.append(CONDA_BIN_DIR)
 
     # save env path to global var
     active_env = env
@@ -92,7 +154,7 @@ def activate(env, set_python_path=False, set_shell_path=True):
 
     # update os.environ PATH (prepend env's bin dir)
     if set_shell_path:
-        os.environ["PATH"] = ":".join(env_dirs + NON_CONDA_PATH)
+        os.environ["PATH"] = ":".join(env_dirs + NON_CONDA_SHELL_PATH)
 
     # update python's sys.path
     if set_python_path:
@@ -116,12 +178,14 @@ def deactivate():
     sys.path = prev_env["pypath"]
     active_env = prev_env['env']
 
-def fix_env():
+def fix_env(debug=False):
     """ attempt to add the current env to the os.environ(PATH) """
 
     # look for things of the form /some/path/lib/python...
     #  ...where there's a coda-meta dir in the same dir as /lib/
     for path in sys.path:
+        if debug:
+            print(f'Found "{path}" in sys.path')
         m = re.search(r'(.+)/(lib/python|lib_pypy|site-packages).*', path)
         if m:
             prefix = m.group(1)
@@ -131,10 +195,21 @@ def fix_env():
                 break
     else:
         raise Exception("Couldn't find anything in sys.path that looks like conda.")
-    activate(env)
+    
+    if debug:
+        print(f'activating: {env}')
+    activate(env, debug=True)
 
-# always try to fix the env
+    
+# Attempt to do some things automatically, but don't fail!
 try:
+    # get the location of conda
+    CONDA_BIN_DIR = get_conda_bin_path()
+
+    # get the list of installed envs
+    discover_named_envs()
+    
+    # always try to fix the env
     fix_env()
 except:
     # but don't fail
