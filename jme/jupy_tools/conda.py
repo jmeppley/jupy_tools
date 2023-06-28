@@ -114,6 +114,7 @@ def deactivate():
     prev_env = PREVIOUS_ENVS.pop(-1)
     os.environ["PATH"] = prev_env["path"]
     sys.path = prev_env["pypath"]
+    active_env = prev_env['env']
 
 def fix_env():
     """ attempt to add the current env to the os.environ(PATH) """
