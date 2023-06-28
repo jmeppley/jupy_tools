@@ -268,7 +268,7 @@ def generate_nonoverlapping_lines(hit_file, format=BLAST_PLUS, buffer=0):
                 query_regions.append(tuple(sorted((qstart, qend))))
                 yield line
 
-def agg_hit_df(non_ovl_hits, max_hit_fragments=0):
+def agg_hit_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False):
     # aggregate all hits by hit/query pair
     if 'matches' not in non_ovl_hits.columns:
         non_ovl_hits = non_ovl_hits.eval('matches = pctid * mlen / 100')
@@ -290,12 +290,27 @@ def agg_hit_df(non_ovl_hits, max_hit_fragments=0):
         if col in non_ovl_hits.columns:
             agg_dict[col] = first
 
-    # calculate query and hit specific alignment lengths if we can
+    # get lengths and extents if we can and if asked
     for pref in ['q','h']:
+        # do for both query and hit start/end pairs
         scol, ecol = [pref+col for col in ['start','end']]
+
+        # only if the columns exist
         if scol in non_ovl_hits.columns and ecol in non_ovl_hits.columns:
+
+            # force start/end pairs to be sorted (simplifies next 2 things)
+            non_ovl_hits[[scol, ecol]] = [
+                sorted(v) for v in non_ovl_hits[[scol, ecol]].values
+            ]
+
+            # get max extent for all hits if requested
+            if keep_extent:
+                # now the start is the smallest start and the end is the biggest end
+                agg_dict.update({scol: min, ecol: max})
+
+            # calculate query and hit specific alignment lengths
             non_ovl_hits = non_ovl_hits.eval(
-                f"{pref}mlen = 1 + abs({ecol} - {scol})"
+                f"{pref}mlen = 1 + {ecol} - {scol}"
             )
             agg_dict[pref + "mlen"] = sum
     
@@ -311,7 +326,8 @@ def agg_hit_df(non_ovl_hits, max_hit_fragments=0):
         
     return agg_hits    
                 
-def agg_hit_table(hit_table, ovl_buffer=0, max_hit_fragments=0, **parse_args):
+def agg_hit_table(hit_table, ovl_buffer=0, max_hit_fragments=0,
+                  keep_extent=False, **parse_args):
     """
     for each hit/query pair return one line of data by merging multiple hit fragments
     
@@ -325,4 +341,4 @@ def agg_hit_table(hit_table, ovl_buffer=0, max_hit_fragments=0, **parse_args):
     if non_ovl_hits is None:
         return None
 
-    return agg_hit_df(non_ovl_hits, max_hit_fragments)
+    return agg_hit_df(non_ovl_hits, max_hit_fragments, keep_extent)
