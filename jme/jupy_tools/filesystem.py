@@ -31,6 +31,7 @@ FileSystem related utilities:
 import os, re, glob, pandas, numpy
 from datetime import datetime
 from collections import namedtuple, defaultdict
+import warnings
 
 def find(path, filters=None):
     """ recursively find files that match executable filters """
@@ -68,19 +69,57 @@ def _check_path(root, name, filters=None):
 TEMPLATE_REXP = re.compile(r"(?<!{)\{\s*(\w+)\s*\}(?!})")
 
 
-def glob_wildcards(template, constraints=None, as_tuple=False, debug=False):
+DICT = 'dict'
+TUPL = 'tupl'
+SNEK = 'snek'
+def glob_wildcards(
+    template,
+    constraints=None,
+    return_type=DICT,
+    as_tuple=None,
+    debug=False
+):
     """ should work like the snakemake function:
           * given a template like path/{variable}.ext
           * find the values for variable that match files
           
-        Except the return value is different.
+        Except the return value is different by default
         
-        Generates for each found file:
+        Normally, generates for each found file:
             (file_path, dict(wildcard values))
             
-        If as_tuple is True, generates named tuple instead of dict.
-            
+        if return_type is set to TUPL=='tupl', a NamedTuple
+        replaces the dict as the second element of each yeilded pair
+
+        if return_type is set to SNEK=='snek;, it will 
+        generate stacks of wildcards by wildcard name
+        that can be accessed as in snakemake:
+            samples, exts = glob_wildcards('files/{sample}.reads.{ext}', 
+                                           return_type=SNEK)
+
+        (NOTE: unlike snakemake, SNEK mode does not return a named tuple,
+        it yeilds lists of wildcards)
+
+        (NOTE: as_tuple is deprecated)
     """
+    # check return_type and as_tuple args
+    if as_tuple is not None:
+        if return_type == DICT:
+            warnings.warn("use return_type instead of as_tuple.  "
+                          "We are assuming you meant: return_type=TUPL",)
+            return_type = TUPL
+        else:
+            warnings.warn("'as_tuple' is deprecated and ignored "
+                          "if you set 'return_type'",)
+
+
+    # allow users to pass types as return_type
+    if return_type == dict:
+        return_type = DICT
+    elif return_type == tuple or return_type == namedtuple:
+        return_type = TUPL
+
+    # i try to avoid brackets in function definitions
     if constraints is None:
         constraints = {}
 
@@ -102,25 +141,39 @@ def glob_wildcards(template, constraints=None, as_tuple=False, debug=False):
     if debug:
         print(f"Wildcard regexp: '{wildcard_pattern}'")
     wildcard_rexp = re.compile(wildcard_pattern)
-    
+
     # create named tuple class for returned data
-    if as_tuple:
+    if return_type in {TUPL, SNEK}:
         wc_names = []
         for m in TEMPLATE_REXP.finditer(template):
             if m not in wc_names:
                 wc_names.append(m.group(1))
         Wildcards = namedtuple("Wildcards", wc_names)
+        if return_type == SNEK:
+            # initialize Wildcards tuple with empty lists
+            wildcards = Wildcards(*[list() for name in wc_names])
 
     # loop over matched files
     for glob_file in glob.glob(glob_string):
         m = wildcard_rexp.match(glob_file)
         if m:
-            # transform dict of names->matches to named tuple, if asked
-            wildcards = Wildcards(**m.groupdict()) if as_tuple else m.groupdict()
-            yield glob_file, wildcards
+            regex_wc = m.groupdict()
+            if return_type == SNEK:
+                # just collect wildcards
+                for wc_name, wc_list in zip(wc_names, wildcards):
+                    wc_list.append(regex_wc[wc_name])
+            else:
+                # yield file, wildcards pair
+                if return_type == TUPL:
+                    # (transform dict of names->matches to named tuple, if asked)
+                    regex_wc = Wildcards(**regex_wc)
+                yield glob_file, regex_wc
         elif debug:
             print("WARNING: {} doesn match {}".format(glob_file, wildcard_rexp.pattern))
 
+    if return_type == SNEK:
+        for wc_list in wildcards:
+            return wc_list
 
 def _hide_dots(path):
     return re.sub(r"\.", "\.", path)
