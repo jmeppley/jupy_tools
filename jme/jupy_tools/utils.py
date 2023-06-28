@@ -270,3 +270,13 @@ def get_dataframe_from_cmd(command, shell=True, sep='\t', **kwargs):
 
 def get_seq_lens(sequence_file, format='fasta'):
     return {r.id:len(r) for r in SeqIO.parse(sequence_file, format=format)}
+
+def parse_prinseq_stats(stats_file):
+    return pandas.read_csv(
+        stats_file,
+        sep='\t',
+        usecols=[1,2],
+        index_col='key',
+        header=None,
+        names=['key', 'value'],
+    )['value']
