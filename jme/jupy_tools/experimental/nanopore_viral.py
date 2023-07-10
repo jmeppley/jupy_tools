@@ -84,7 +84,7 @@ def get_best_any_hits(paf_file, min_pctid=80, min_hit_frac=.8):
         # aggregate all alignments for each query/hit pair
         hits = hit_tables.agg_hit_table(paf_file, format=hit_tables.PAF, keep_extent=True)
 
-        # only keep hits that cover at least 80% of the query with at least 80% ID
+        # only keep hits that cover at least 80% of the shorter seq  with at least 80% ID
         hits['mmfrac'] = hits.mlen / hits[['qlen', 'hlen']].min(axis=1)
         good_hits = hits.query(f'mmfrac >= {min_hit_frac} and pctid >= {min_pctid}')
 
