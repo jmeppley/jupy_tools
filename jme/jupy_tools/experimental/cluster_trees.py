@@ -65,7 +65,7 @@ from matplotlib.patches import Circle, Wedge, Polygon
 from matplotlib.colors import to_rgba
 from scipy.cluster.hierarchy import dendrogram, linkage, cut_tree
 
-def cat_tree_dir_alignment(aln_files_by_vog, **kwargs):
+def cat_tree_dir_alignment(aln_files_by_vog, format='stockholm'):
     """
     Given: dict from gene name to stockholm aln file,
     
@@ -77,7 +77,8 @@ def cat_tree_dir_alignment(aln_files_by_vog, **kwargs):
 
     # parse alignments
     for vog, align_file in aln_files_by_vog.items():
-        vog_alignment = AlignIO.read(align_file, format=kwargs.get('format','stockholm'))
+        aln_format = format if isinstance(format, str) else format[vog]
+        vog_alignment = AlignIO.read(align_file, format=aln_format)
 
         # keep a record of where genomes aligned
         for i, gene in enumerate(vog_alignment):
