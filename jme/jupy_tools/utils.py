@@ -1,5 +1,6 @@
 import logging
 import io
+import re
 import numpy
 import pandas
 import subprocess
@@ -280,3 +281,44 @@ def parse_prinseq_stats(stats_file):
         header=None,
         names=['key', 'value'],
     )['value']
+
+def get_snake_status_table(logfile, as_dict=False):
+    rules_by_job_id = {}
+    with open(logfile) as lines:
+        last_rule = None
+        last_output = None
+        last_error = None
+        for line in lines:
+            m = re.search('^(?:checkpoint|(?:local)?rule)\s+(.+):\s*$', line.strip())
+            if m:
+                last_rule = m.group(1)
+                last_error = None
+                continue
+            m = re.search('^Error\s+in\s+(?:checkpoint|rule)\s+(.+):\s*$', line.strip())
+            if m:
+                last_rule = None
+                last_error = m.group(1)
+                continue
+            m = re.search(r'^\s*output:\s*(\S.+\S)', line.strip())
+            if m:
+                last_output = m.group(1)
+                continue
+            m = re.search(r'^\s*jobid:\s*(\d+)', line.strip())
+            if m:
+                jobid = int(m.group(1))
+                if last_rule is not None:
+                    rules_by_job_id[jobid] = {'rule': last_rule, 'output': last_output, 'status': 'running'}
+                elif last_error is not None:
+                    rules_by_job_id[jobid]['status'] = 'error'
+                else:
+                    print("WARNING: jobid line before any rule!")
+                continue
+            m = re.search(r'^Finished\s+job\s+(\d+)', line)
+            if m:
+                jobid = int(m.group(1))
+                rules_by_job_id[jobid]['status'] = 'done'
+    
+    if as_dict:
+        return rules_by_job_id
+    
+    return pandas.DataFrame(rules_by_job_id).T

@@ -126,13 +126,13 @@ def glob_wildcards(
     # simple glob for finding files {xxx} -> *
     glob_string = TEMPLATE_REXP.sub("*", template)
 
-    named_patterns = set()
+    wc_names = []
     def wc_repl(match):
         """ replace {xxx} with named regex pattern using any constraints """
         wc_name = match.group(1)
-        if wc_name in named_patterns:
+        if wc_name in wc_names:
             return f"(?P={wc_name})"
-        named_patterns.add(wc_name)
+        wc_names.append(wc_name)
         wc_patt = constraints.get(wc_name, r".+")
         return f"(?P<{wc_name}>{wc_patt})"
 
@@ -144,10 +144,6 @@ def glob_wildcards(
 
     # create named tuple class for returned data
     if return_type in {TUPL, SNEK}:
-        wc_names = []
-        for m in TEMPLATE_REXP.finditer(template):
-            if m not in wc_names:
-                wc_names.append(m.group(1))
         Wildcards = namedtuple("Wildcards", wc_names)
         if return_type == SNEK:
             # initialize Wildcards tuple with empty lists
@@ -173,7 +169,7 @@ def glob_wildcards(
 
     if return_type == SNEK:
         for wc_list in wildcards:
-            return wc_list
+            yield wc_list
 
 def _hide_dots(path):
     return re.sub(r"\.", "\.", path)
