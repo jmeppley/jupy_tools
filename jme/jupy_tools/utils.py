@@ -294,7 +294,7 @@ def get_snake_status_table(logfile, as_dict=False):
                 last_rule = m.group(1)
                 last_error = None
                 continue
-            m = re.search('^Error\s+in\s+(?:checkpoint|rule)\s+(.+):\s*$', line.strip())
+            m = re.search('Error\s+in\s+(?:checkpoint|rule)\s+(.+):\s*$', line.strip())
             if m:
                 last_rule = None
                 last_error = m.group(1)
@@ -302,6 +302,12 @@ def get_snake_status_table(logfile, as_dict=False):
             m = re.search(r'^\s*output:\s*(\S.+\S)', line.strip())
             if m:
                 last_output = m.group(1)
+                if last_error is not None:
+                    # this should only happen if the error was not connected to a usable jobid
+                    for data in rules_by_job_id.values():
+                        if data['rule'] == last_error and data['output'] == last_output:
+                            data['status'] = 'error'
+                            break
                 continue
             m = re.search(r'^\s*jobid:\s*(\d+)', line.strip())
             if m:
@@ -309,7 +315,12 @@ def get_snake_status_table(logfile, as_dict=False):
                 if last_rule is not None:
                     rules_by_job_id[jobid] = {'rule': last_rule, 'output': last_output, 'status': 'running'}
                 elif last_error is not None:
-                    rules_by_job_id[jobid]['status'] = 'error'
+                    if jobid in rules_by_job_id:
+                        rules_by_job_id[jobid]['status'] = 'error'
+                        last_error = None
+                    else:
+                        # sometimes (some versions?) the error jobid is zero for all errors and we'll have to match by output
+                        pass
                 else:
                     print("WARNING: jobid line before any rule!")
                 continue
