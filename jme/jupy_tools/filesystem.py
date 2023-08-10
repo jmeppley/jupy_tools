@@ -26,6 +26,10 @@ FileSystem related utilities:
 
   get_file_size_table(usage_data, min_date):
       aggregate total file sizes by date and user
+
+  go_to_dir(dirname):
+      changes current working dir to dirname (with %cd), creating the dir if
+      necessary
 """
 
 import os, re, glob, pandas, numpy
@@ -322,3 +326,17 @@ def get_bin_bounds_string(bin_index, bin_bounds, to_str=repr, suffix=""):
 def get_user_lookup_table():
     """ returns series mapping user id to user name """
     return pandas.read_table('/etc/passwd', sep=':', names=['user','code','id','group','home','shell'], index_col=2)['user']
+
+def go_to_dir(dirname):
+    """
+    Creates `dirname` if it doesnt exist, then navigates to it with %cd magic
+    """
+    import os
+    os.makedirs(dirname, exist_ok=True)
+
+    from IPython import get_ipython
+    ipython = get_ipython()
+    ipython.magic(f'%cd {dirname}')
+
+    return dirname
+

@@ -1,7 +1,7 @@
 # This lets me setup my env with just: from jme.jupy_tools import * 
 
 from jme.jupy_tools import conda, hit_tables
-from jme.jupy_tools.filesystem import glob_wildcards
+from jme.jupy_tools.filesystem import glob_wildcards, go_to_dir
 from jme.jupy_tools.utils import LogLogger, first, read_tsv, get_seq_lens, \
                                  save_fig_to_pdf
 
