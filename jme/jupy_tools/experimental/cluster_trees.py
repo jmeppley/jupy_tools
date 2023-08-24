@@ -344,7 +344,7 @@ class TreeBuilder():
         max_ext_genomes = int(numpy.floor(len(tbd['genomes']) * max_new_genome_frac))
         new_seqs = list(other_genomes_gene_counts \
                             .query(f'vog >= {cutoff}') \
-                            .vog \
+                            .vog 
                             .sort_values() \
                             .tail(max_ext_genomes) \
                             .index)
@@ -470,7 +470,11 @@ class TreeMetadata():
             else:
                 # handle the case where we get a collapsed clade
                 if self.color_dict:
-                    # only return a color if all terminals map to same category or null_value
+                    # is there a special entry for this clade?
+                    if item in self.data_dict:
+                        return self.get_color(self.data_dict[item])
+
+                    # otherwise, only return a color if all terminals map to same category or null_value
                     categories = Counter(self.data_dict.get(t.name, self.null_value) 
                                            for t in item.get_terminals())
                     non_null = []
@@ -517,7 +521,6 @@ def draw_tree_metadata(ax, y_posns, metadata_metadata, md_font_size=7, x_labels_
     """
 
     # plot metadata as heatmap (using bars())
-    labels = []
     bottoms, heights, tops, nodes = [], [], [], []
     for node in y_posns:
         y = y_posns[node]
@@ -535,25 +538,33 @@ def draw_tree_metadata(ax, y_posns, metadata_metadata, md_font_size=7, x_labels_
         bottoms.append(bottom)
         tops.append(top)
 
-    for i, metadata in enumerate(metadata_metadata):
+    x_pos = -1
+    x_labels = {}
+    for metadata in metadata_metadata:
+        if metadata is None:
+            x_pos += .5
+            continue
+        
+        x_pos += 1
+        x_labels[x_pos] = metadata.label
+
         colors = [metadata.get_item_color(g) for g in nodes]
-        _ = ax.bar(i, 
+        _ = ax.bar(x_pos, 
                    height=heights, 
                    width=1, 
                    bottom=bottoms, 
                    ec='grey',
                    linewidth=.1,
                    color=colors)
-        labels.append(metadata.label)
     
     # x axis labels
-    _ = ax.set_xlim([-1,len(labels)])
-    _ = ax.set_xticks(list(range(len(labels))))
+    _ = ax.set_xlim([-1,max(x_labels)])
+    _ = ax.set_xticks(list(x_labels.keys()))
     if x_labels_on_top:
-        _ = ax.set_xticklabels(labels, rotation=-90, fontsize=md_font_size)
+        _ = ax.set_xticklabels(x_labels.values(), rotation=-90, fontsize=md_font_size)
         _ = ax.xaxis.tick_top()
     else:
-        _ = ax.set_xticklabels(labels, rotation=90, fontsize=md_font_size)
+        _ = ax.set_xticklabels(x_labels, rotation=90, fontsize=md_font_size)
         
     # clear y axis labels    
     ticks = []
@@ -677,6 +688,8 @@ def draw(
             this option.
         label_colors : dict or callable
             A function or a dictionary specifying the color of the tip label.
+            A dict should map node labels to colors.
+            A function should expect clade objects.
             If the tip label can't be found in the dict or label_colors is
             None, the label will be shown in black.
         collapsed_clade_labels: dict
@@ -746,17 +759,17 @@ def draw(
     if label_colors:
         if callable(label_colors):
 
-            def get_label_color(label):
-                return label_colors(label)
+            def get_label_color(clade):
+                return label_colors(clade)
 
         else:
             # label_colors is presumed to be a dict
-            def get_label_color(label):
-                return label_colors.get(label, "black")
+            def get_label_color(clade):
+                return label_colors.get(label_func(clade), "black")
 
     else:
 
-        def get_label_color(label):
+        def get_label_color(clade):
             # if label_colors is not specified, use black
             return "black"
 
@@ -994,7 +1007,7 @@ def draw(
                     y_here,
                     " %s" % label,
                     verticalalignment="center",
-                    color=get_label_color(label),
+                    color=get_label_color(clade),
                 )
             if clade.clades:
                 # Draw a vertical line connecting all children
@@ -1035,7 +1048,7 @@ def draw(
                     y_here - (d_y / 2),
                     " %s" % label,
                     verticalalignment="center",
-                    color=get_label_color(label),
+                    color=get_label_color(clade),
                 )
 
     draw_clade(tree.root, 0, "k", plt.rcParams["lines.linewidth"])
@@ -1843,17 +1856,17 @@ def draw_polar(
     if label_colors:
         if callable(label_colors):
 
-            def get_label_color(label):
-                return label_colors(label)
+            def get_label_color(clade):
+                return label_colors(clade)
 
         else:
             # label_colors is presumed to be a dict
-            def get_label_color(label):
-                return label_colors.get(label, "black")
+            def get_label_color(clade):
+                return label_colors.get(label_func(clade), "black")
 
     else:
 
-        def get_label_color(label):
+        def get_label_color(clade):
             # if label_colors is not specified, use black
             return "black"
 
@@ -1977,7 +1990,7 @@ def draw_polar(
                 y_here,
                 " %s" % label,
                 verticalalignment="center",
-                color=get_label_color(label),
+                color=get_label_color(clade),
             )
         if clade.clades:
             # Draw a vertical line connecting all children
