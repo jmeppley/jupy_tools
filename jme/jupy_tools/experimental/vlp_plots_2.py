@@ -53,6 +53,7 @@ from matplotlib import colors
 from matplotlib.cm import ScalarMappable
 
 from Bio import Entrez
+from Bio.Phylo import BaseTree
 Entrez.email = 'jmeppley@hawaii.edu'
 
 from jme.jupy_tools.faves import *
@@ -161,7 +162,8 @@ class TreePlotterVLP():
         if 'leaf_color' in self.plot_metadata['genomes']:
             # User can speicy a TreeMetadatra config in
             # plot_metadaat['genomes']['leaf_color']
-            self.leaf_color_md = get_tree_metadata(**self.plot_metadata['genomes']['leaf_color'])
+            self.leaf_color_md = \
+                self.get_tree_metadata(**self.plot_metadata['genomes']['leaf_color'])
         else:
             # Otherwise we look for a seq_type metadata in the genome metadata
             leaf_color_col = seq_type_col
@@ -181,9 +183,9 @@ class TreePlotterVLP():
             else:
                 # if we find nothing, let everything be written in black
                 self.leaf_color_md = None
-            leaf_color_fn = self.leaf_color_md.get_item_color \
-                            if self.leaf_color_md is not None \
-                            else None
+        leaf_color_fn = self.leaf_color_md.get_item_color \
+                        if self.leaf_color_md is not None \
+                        else None
 
         # merge metadata with actual data
         self.plot_data = \
@@ -196,7 +198,9 @@ class TreePlotterVLP():
             )
 
         # desc overrides can come from JSON or paameters
-        self.override_gene_descs = override_gene_descs
+        self.override_gene_descs = {} \
+                if override_gene_descs is None \
+                else override_gene_descs
 
 
     def debug_on(self):
@@ -238,17 +242,27 @@ class TreePlotterVLP():
                                              )
         return top_genes
 
-    def get_collapsed_nodes(self, tree, max_d_cutoff=1.5, non_ref_label='Novel'):
+    def get_collapsed_nodes(
+        self, tree, 
+        max_d_cutoff=1.5, 
+        non_ref_label='Novel',
+        min_ref_size=3,
+        min_novel_size=8,
+    ):
         # lets collapse:
         #  - any clade over 10 seqs with no ref in it
         #  - any clade with more than 3 refs all the same host
         collapsed_nodes = {}
+
+        # constrain to clusters if there's a cluster col set
         cl_id_map = self.md_df[self.clusters_col] \
                     if self.clusters_col is not None \
                     else None
 
         if self.debug:
             counts = Counter()
+
+        # loop over clades (exclude single terminals)
         for clade in tree.get_nonterminals():
             if self.debug:
                 counts['clades_all'] += 1
@@ -266,12 +280,19 @@ class TreePlotterVLP():
             if self.debug:
                 counts['clades_checked'] += 1
 
-            terminals = {t.name for t in clade.get_terminals()}
+            # get the seq names from this clade
+            terminals = get_tree_seqs(clade)
+            # get the cluster of the first seq, if we have a cluster column set
             cl_id = cl_id_map.get(first(terminals), -1) \
                     if cl_id_map is not None \
                     else None
 
+            # if there is a reference sequence in the clade
             if any(self.md_df[self.seq_type_col][t] == self.ref_seq_type for t in terminals):
+                # ccollapse if:
+                #  - the whole clade is ref seqs
+                #  - (all in the same cluster)
+                #  - at least 3 seqs
                 if (
                     all(
                         (t in self.ref_names
@@ -282,7 +303,7 @@ class TreePlotterVLP():
                         )
                         for t in terminals
                     )
-                    and (len(terminals) > 2)
+                    and (len(terminals) >= min_ref_size)
                 ):
                     if self.debug:
                         counts['collapsed_w_ref'] += 1
@@ -293,13 +314,21 @@ class TreePlotterVLP():
                     count_str = "\n".join(f"{c} {h}" for h,c in sorted(host_counts.items()))
                     label = f"Published phage:\n{count_str}"
                     collapsed_nodes[clade] = label
+
+                # don't collapse any clades with a mix of refs and novel
                 continue
 
-            if len(terminals) < 8:
+            # don't collapse novel clades w fewer than 8 seqs
+            if len(terminals) < min_novel_size:
                 continue
 
             depths = clade.depths()
+            if not max(depths.values()):
+                depths = clade.depths(unit_branch_lengths=True)
             max_d = max(depths[t] for t in clade.get_terminals())
+            # collapse novel clades if:
+            #  - they don't differ too much (deepest branch less than max_d_cutoff)
+            #  - (they are all in the same cluster)
             if (
                 max_d < max_d_cutoff
                 and
@@ -323,7 +352,7 @@ class TreePlotterVLP():
         if self.debug:
             print(counts)
 
-        # don't collapse if set of clades is empty or a single clade that is the whole tree
+        # return Nones if set of clades is empty or a single clade that is the whole tree
         if (
             (len(collapsed_nodes) == 0)
             or
@@ -371,7 +400,19 @@ class TreePlotterVLP():
 
         return gene_df
 
-    def get_gene_colors_and_descs(self, seqs, gene_method=GM_TOP):
+    def get_gene_colors_and_descs(self, seqs, gene_method=GM_TOP,
+                                  gene_footnotes=None):
+        """
+        gene_method:
+            GM_TOP (default):
+                simply color by the top genes in this tree
+            GM_MERGE:
+                simplify gene descs with type patterns and use simpified names
+                as annots, merging them together before laying out the plot.
+            GM_TYPES:
+                keep exising annots and descriptions, but color by
+                type_patterns, trying to keep the same colors across plots
+        """
         gene_colors = {}
 
         ## go through all genes in cluster and pull out any with the primary types
@@ -398,12 +439,20 @@ class TreePlotterVLP():
             if pandas.notna(a)
         )
 
+        def generate_colors(starting_colors, remainder='black'):
+            for color in starting_colors:
+                yield color
+            while True:
+                yield remainder
+
+        n_genes = self.plot_metadata['genes'].get('n_genes', 20)
         base_colors = self.plot_metadata['genes']['base_colors']
+        n_colored_genes = min(n_genes, len(base_colors))
+        n_base_colors = len(base_colors)
         type_colors = dict(zip(
             (p[0] for p in self.plot_metadata['genes']['type_patterns']),
-            base_colors,
+            generate_colors(base_colors),
         ))
-        n_types = len(type_colors)
 
         if gene_method == GM_TYPES:
             # first, find the most common annotations with any of the primary types
@@ -413,24 +462,28 @@ class TreePlotterVLP():
                 if gene_type is not None:
                     gene_colors[gene] = type_colors[gene_type]
 
-                if len(gene_colors) >= 18:
+                if len(gene_colors) >= n_base_colors:
                     break
-            # prioritize non-type colors for the remaining genes
-            color_iter = iter(base_colors[n_types:] + base_colors[:n_types])
+            # use left over base and type colors before using black for
+            # everything else
+            color_iter = generate_colors([c for c in reversed(base_colors)
+                                          if c not in gene_colors.values()])
         if gene_method == GM_MERGE:
             for (type_name, color) in type_colors.items():
                 if type_name in non_na_genome_counts:
                     gene_colors[type_name] = color
-            # prioritize non-type colors for the remaining genes
-            color_iter = iter(base_colors[n_types:] + base_colors[:n_types])
+            # use left over base and type colors before using black for
+            # everything else
+            color_iter = generate_colors([c for c in reversed(base_colors)
+                                          if c not in gene_colors.values()])
         else:
-            color_iter = iter(base_colors)
+            color_iter = generate_colors(base_colors)
 
-        # Add from top_genes until we reach 18
+        # Add from top_genes until we reach n_genes
         tree_top_genes = self.get_top_genes(seqs)
         top_gene_iter = iter(dict(non_na_genome_counts \
                                     .most_common()).keys())
-        while len(gene_colors) < 18:
+        while len(gene_colors) < n_genes:
             try:
                 top_gene = next(top_gene_iter)
             except StopIteration:
@@ -446,7 +499,8 @@ class TreePlotterVLP():
             gene_label_colors = {}
             for gene in cluster_genes[gene_col]:
                 if gene in gene_colors:
-                    gene_label = make_gene_desc(gene, gene, non_na_genome_counts[gene])
+                    #gene_label = make_gene_desc(gene, gene, non_na_genome_counts[gene])
+                    gene_label = gene
                     #print(gene, gene_label, gene_colors[geene])
                     gene_label_colors[gene_label] = gene_colors[gene]
                 else:
@@ -457,8 +511,17 @@ class TreePlotterVLP():
             return gene_label_colors, cluster_genes
 
         # otherwise return dict of descrtiptions for labelling genes
+        if gene_footnotes is None:
+            gene_footnotes = {}
+            max_footnotes = 0
+        else:
+            max_footnotes = max(len(v) for v in gene_footnotes.values())
         gene_descs = {
-            gene: make_gene_desc(gene, annot_descs[gene], non_na_genome_counts[gene])
+            gene: make_gene_desc(gene, annot_descs[gene],
+                                 non_na_genome_counts[gene],
+                                 gene_footnotes.get(gene, []),
+                                 max_footnotes,
+                                )
             for gene in gene_colors
         }
         return gene_colors, gene_descs
@@ -575,12 +638,17 @@ class TreePlotterVLP():
             md = self.metadata_metadata_all[i]
 
             # check for non null values
-            if drop_all_nas and (md is not None) and (
-                all(md.get_item_value(s) in {None, md.null_value}
-                    for s in seqs)
-            ):
-                # if all the values for seqs are null, then skip this MD
-                continue
+            try:
+                if drop_all_nas and (md is not None) and (
+                    all(md.get_item_value(s) in [None, md.null_value]
+                        for s in seqs)
+                ):
+                    # if all the values for seqs are null, then skip this MD
+                    continue
+            except TypeError as e:
+                print(md.label, len(seqs), md.null_value)
+                print(dict(Counter(type(s) for s in seqs).most_common()))
+                raise e
 
             # filter seqs if asked
             if (
@@ -616,6 +684,7 @@ class TreePlotterVLP():
                   collapse=True, cl_id=None, draw_genes=None,
                   gene_method=GM_TOP,
                   length_hist=False,
+                  gene_footnotes=None,
                   **kwargs):
         """
         Given a phylogenetic tree and genome metadata, make a synteny tree plot (using cluster_trees.master_plot)
@@ -626,6 +695,10 @@ class TreePlotterVLP():
                     with no gene locations.
 
         collapse: if True (default) try to collapse clades of all novel or all ref sequences
+                  can also be a dict of one of two types:
+                      * map from node to labels
+                      * set of parameters for the get_collapsed_nodes() method
+                  or just pass a cutoff value (max_d_cutoff) for the method
 
         gene_method: if "top" (default), draw the most common genes
                      if "types", prioritize genes that match the configured
@@ -645,18 +718,54 @@ class TreePlotterVLP():
             # default is sort by distance from mean length
             draw_genes = get_distance_to_mean_length_function(tree_seqs, self.seq_lens)
 
-        md_md = self.get_metadata_metadata(tree_seqs, cl_id)
-
         if collapse:
-            # if True, use the default cutoff
-            if collapse is True:
-                collapsed_nodes, collapsed_node_heights = self.get_collapsed_nodes(tree)
-            # otherwise use the passed value as the cutoff
+            # is it a collapsed node label dict?
+            if (
+                isinstance(collapse, dict)
+                and
+                isinstance(next(iter(collapse)), BaseTree.Clade)
+            ):
+                # then we just add the heights
+                collapsed_nodes = collapse
+                # set clade heights and check that nodes do not overlap
+                used_nodes = set()
+                biggest_clade = max(len(c.get_terminals()) for c in collapsed_nodes)
+                if "collapsed_clade_heights" in kwargs:
+                    collapsed_node_heights = kwargs.pop("collapsed_clade_heights")
+                else:
+                    collapsed_node_heights = {}
+                    for c in collapsed_nodes:
+                        seqs = get_tree_seqs(c)
+                        if any(s in used_nodes for s in seqs):
+                            raise Exception("Collapsed Clades cannnot overlap with each other!")
+                        used_nodes.update(seqs)
+                        collapsed_node_heights[c] = numpy.interp(len(seqs), [2, biggest_clade], [2,5])
             else:
+                # we run get_collapsed_nodes with requested parameters
+                if isinstance(collapse, dict):
+                    # they passed a dict of params to use
+                    collapse_kwargs = collapse
+                elif collapse is True:
+                    # use the default params
+                    collapse_kwargs = {}
+                else:
+                    # use the collapse value as the cutoff
+                    collapse_kwargs = {'max_d_cutoff': collapse}
+ 
                 collapsed_nodes, collapsed_node_heights = \
-                    self.get_collapsed_nodes(tree, max_d_cutoff=collapse)
+                    self.get_collapsed_nodes(tree, **collapse_kwargs)
         else:
             collapsed_nodes, collapsed_node_heights = None, None
+
+        # get list of nodes in this tree
+        tree_nodes = tree_seqs
+        if collapsed_nodes:
+            # remove hidden nodes and replace with clade if collapsed
+            for clade in collapsed_nodes:
+                tree_nodes = tree_nodes.difference({t.name for t in
+                                                    clade.get_terminals()})
+                tree_nodes.update(clade)
+        md_md = self.get_metadata_metadata(tree_nodes, cl_id)
 
         # pull master_plot args from plot_metadata, but allow kwarg overrides
         for k,v in self.plot_metadata.get('draw_args', {}).items():
@@ -666,11 +775,16 @@ class TreePlotterVLP():
 
         if draw_genes:
             # gene colors (TODO: This needs to be updated!)
-            if 'desc' in self.gene_df and 'base_colors' in self.plot_metadata:
-                # if gene_method is merger, gene descs will be a modified gene_table
+            if (
+                'desc' in self.gene_df
+                and
+                'base_colors' in self.plot_metadata.get('genes', {})
+            ):
+                # if gene_method is merge, gene descs will be a modified gene_table
                 # otherwise, it's a dict from gene to description
                 gene_colors, gene_descs = self.get_gene_colors_and_descs(tree_seqs,
                                                                          gene_method,
+                                                                         gene_footnotes,
                                                                         )
                 if gene_method == GM_MERGE:
                     plot_data['gene_table'] = gene_descs
@@ -695,18 +809,25 @@ class TreePlotterVLP():
                                       )
 
         # make some legends (this will fail for draw_genes=False)
+        if draw_genes == False:
+            print("WARNING: I don't know how to make legnds when draw_genes is False!!")
+            return fig
+        
         # figure out where the plots are
         x, y, w, h = fig.axes[0].figbox.bounds
         x1, y1, w1, h1 = fig.axes[1].figbox.bounds
-        x2, y2, w2, h2 = fig.axes[2].figbox.bounds
+        x2, y2, w2, h2 = (
+            fig.axes[2].figbox.bounds
+            if 'clade_ratio_dicts' not in kwargs
+            else
+            fig.axes[4].figbox.bounds
+        )
         top = y2 + h2
 
         # separate categorical and continuous MDs
         cat_mds = []
         cont_mds = []
-        tree_nodes = tree_seqs.union(collapsed_nodes.keys()) \
-                     if collapsed_nodes \
-                     else tree_seqs
+
         for md in md_md:
             if md is None:
                 continue
@@ -779,13 +900,52 @@ class TreePlotterVLP():
                 for label, seq_lens in length_hist.items():
                     h = lax.hist(seq_lens, bins=50, log=True, label=label,
                                  alpha=.66, range=hist_range,
-                                 histtype='step') 
+                                 histtype='step')
                 _ =  lax.legend()
             else:
                 # other wise just make a hist of tree seq lengths
                 tree_seq_lens = [self.seq_lens[s] for s in tree_seqs]
-                h = lax.hist(tree_seq_lens, bins=25, log=True) 
+                h = lax.hist(tree_seq_lens, bins=25, log=True)
 
+        return fig
+
+    def draw_circular_tree(
+        self,
+        tree_name,
+        tree, 
+        figsize=[12,12], 
+        bg_styles_dict={},
+        ring_width=.1,
+    ):
+
+        # get metadata
+        tree_seqs = get_tree_seqs(tree)
+        md_md = self.get_metadata_metadata(tree_seqs)
+
+        fig, ax = plt.subplots(1,1,figsize=figsize)
+
+        ring_order = get_ring_order(tree.root)
+        leaf_arc = 355 / len(ring_order)
+        r = recursive_draw(ax, tree.root, leaf_arc=leaf_arc, 
+                           bg_styles_dict=bg_styles_dict)
+
+        
+        for mdmd in md_md:
+            if mdmd is not None:
+                draw_md_ring(ax, ring_order, mdmd, radius=r, width=ring_width, leaf_arc=leaf_arc)
+                r += ring_width
+            else:
+                r += ring_width / 2
+
+        _ = ax.set_xlim(-r,r)
+        _ = ax.set_ylim(-r,r)
+        _ = ax.set_xticks([])
+        _ = ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+        _ = ax.set_title(tree_name, pad=30)
+        
         return fig
 
 def add_cat_md_legend(label, values_colors, fig, **legend_kwargs):
@@ -985,9 +1145,13 @@ def get_host_counts(refs, known_hosts, parents=None):
 
     return host_counts
 
-def make_gene_desc(gene, desc, count):
+def make_gene_desc(gene, desc, count, footnotes, footnote_size):
     gene_id_str = f' ({gene})' if re.search(gene, desc) is None else ''
-    return f'{desc}{gene_id_str} (in {count} genomes)'
+    desc = f'{desc}{gene_id_str} (in {count} genomes)'
+    for n in range(footnote_size, -1, -1):
+        char = " " if n >= len(footnotes) else footnotes[n]
+        desc += char
+    return desc
 
 def get_tree_seqs(tree):
     return {t.name for t in tree.get_terminals()}
@@ -1192,11 +1356,17 @@ def recursive_draw(ax, clade,
                    collapsed_dict=None,
                    offset=(0,0),
                    max_distance=None,
+                   unit_branch_lengths=None,
                    leaf_arc=None):
 
     # some things get set automatically based on the first (root) clade
     if max_distance is None:
-        max_distance = max(clade.distance(t) for t in clade.get_terminals())
+        max_distance = max(clade.depths().values())
+        if max_distance == 0:
+            max_distance = max(clade.depths(unit_branch_lengths=True).values())
+            unit_branch_lengths = True
+        else:
+            unit_branch_lengths = False
     if style_dicts is None:
         style_dicts = defaultdict(dict)
         if line_styles_dict is not None:
@@ -1224,6 +1394,12 @@ def recursive_draw(ax, clade,
 
         # get fraction of requested span
         leaf_arc = total_arc_span / total_segs
+
+    if unit_branch_lengths:
+        def get_clade_distance(node):
+            return 1
+    else:
+        get_clade_distance = clade.distance
 
     if ax_patches is None:
         add_patches_on_exit = True
@@ -1297,7 +1473,7 @@ def recursive_draw(ax, clade,
                 triangle_style.update(collapsed_style)
 
         # get triangle shape
-        distances = numpy.array([clade.distance(t) for t in clade.get_terminals()])
+        distances = numpy.array([get_clade_distance(t) for t in clade.get_terminals()])
         # set up triangle in polar corrdinates
         triangle_verts_polar_unzipped = [
             (tot_distance, tot_distance + distances.max(), tot_distance + distances.min()),
@@ -1322,7 +1498,7 @@ def recursive_draw(ax, clade,
         centers = []
         depths = [tot_distance,]
         for child in clade.clades:
-            d = clade.distance(child)    # radial distance
+            d = get_clade_distance(child)    # radial distance
             n = child.count_terminals()  # how many leaves
             w2 = n * leaf_arc / 2        # 1/2 angle covered
             c = last_end + w2            # center (half from previous end)
@@ -1337,6 +1513,7 @@ def recursive_draw(ax, clade,
                                style_dicts=style_dicts,
                                leaf_arc=leaf_arc,
                                max_distance=max_distance,
+                               unit_branch_lengths=unit_branch_lengths,
                               )
             depths.append(d)
             last_end = c + w2

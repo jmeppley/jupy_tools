@@ -138,18 +138,21 @@ def filter_cat_alignment(cat_alignment, genome_residue_frac=.05, residue_genome_
     
     Returns a new Bio.MultipleSequenceAlignment object
     """
-    # count gapped genomes at each residue
-    gapped_genome_counts = defaultdict(int)
-    for j, alignment in enumerate(cat_alignment):
-        for i, c in enumerate(alignment.seq):
-            if c in {'.', '-'}:
-                gapped_genome_counts[i] += 1  # add 1 for this residue
+    if residue_genome_frac > 0:
+        # count gapped genomes at each residue
+        gapped_genome_counts = defaultdict(int)
+        for j, alignment in enumerate(cat_alignment):
+            for i, c in enumerate(alignment.seq):
+                if c in {'.', '-'}:
+                    gapped_genome_counts[i] += 1  # add 1 for this residue
 
-    # flag residues with <50% of genomes
-    cutoff = len(cat_alignment) * residue_genome_frac
-    residues_to_drop = {i
-                        for i, gap_count in gapped_genome_counts.items()
-                        if (len(cat_alignment) - gap_count) < cutoff}
+        # flag residues with <50% of genomes
+        cutoff = len(cat_alignment) * residue_genome_frac
+        residues_to_drop = {i
+                            for i, gap_count in gapped_genome_counts.items()
+                            if (len(cat_alignment) - gap_count) < cutoff}
+    else:
+        residues_to_drop = {}
 
     # build new alignment dropping flagged residues and skipping genomes with too many gaps
     alignments = []
@@ -408,6 +411,9 @@ class TreeMetadata():
             or a callable transformation to convert values to a cmap-suitable range (implyies continuous)
         null_color: :str: or :tuple:
             color for missing values (default: transparent)            
+        rename: :dict: or callable or None (default)
+            for 'category' metadata, translates category names in
+            get_category_colors() (if not None)
     """
     label = attr.ib()
     data_dict = attr.ib()
@@ -417,6 +423,7 @@ class TreeMetadata():
     color_method = attr.ib(default="category")
     null_color = attr.ib(default=(1., 1., 1., 0.))
     collapsed_clade_labels = attr.ib(default=None)
+    rename = attr.ib(default=None)
     
     def __attrs_post_init__(self):
         """ using the color attributes, set up the get_color method """
@@ -446,11 +453,39 @@ class TreeMetadata():
                     self.color_map = plt.get_cmap(self.color_map)
                     
                 self.get_color = self._get_color_from_map
-            
+
     def _use_color_dict(self):
         self.get_color = self._get_color_from_dict
         # add null value to color dict
         self.color_dict[self.null_value] = self.null_color
+
+    def get_category_colors(self, seqs=None):
+        """ yield uples of value, color pairs for all the possible value/color
+        pairs represented by this metadata object.
+        
+        If a collection of seqs is given, only use values/colors returnable by
+        itmes in that collection
+        """
+        # If a rename function or dict given, rename the values returned
+        if callable(self.rename):
+            rename_fn = self.rename
+        elif self.rename is None:
+            def rename_fn(value):
+                return value
+        else:
+            def rename_fn(value):
+                return self.rename.get(value, value)
+        
+        # get values (either from seqs or all values)
+        if seqs:
+            unique_values = set(self.data_dict.get(s, self.null_value)
+                                for s in seqs)
+        else:
+            unique_values = self.color_dict.keys()
+
+        # generate tuples of values paired with the corrsponding color
+        for value in unique_values:
+            yield (rename_fn(value), self.color_dict[value])
 
     def get_color(self):
         pass
@@ -463,36 +498,21 @@ class TreeMetadata():
             return self.null_color
         return self.color_map(self._transform(value))
 
-    def get_item_color(self, item):
+    def get_item_value(self, item):
         if isinstance(item, Phylo.Newick.Clade):
             if item.is_terminal():
-                return self.get_item_color(item.name)
+                return self.get_item_value(item.name)
             else:
                 # handle the case where we get a collapsed clade
                 if self.color_dict:
+                    # catergorical md, retun all the values unless:
                     # is there a special entry for this clade?
                     if item in self.data_dict:
-                        return self.get_color(self.data_dict[item])
+                        return self.data_dict[item]
 
-                    # otherwise, only return a color if all terminals map to same category or null_value
-                    categories = Counter(self.data_dict.get(t.name, self.null_value) 
+                    # return all values for this clade
+                    return Counter(self.data_dict.get(t.name, self.null_value) 
                                            for t in item.get_terminals())
-                    non_null = []
-                    total, total_non_null = 0, 0
-                    for category, count in categories.items():
-                        total += count
-                        if category != self.null_value:
-                            non_null.append(category)
-                            total_non_null += count
-                    if len(non_null) == 1:
-                        # get the RGB of the mapped color
-                        color = to_rgba(self.get_color(non_null[0]))[:3]
-                        # make transparent in proportion to fraction with non-null value
-                        alpha = total_non_null / total                        
-                        return tuple(list(color) + [alpha,])
-                    
-                    # too many categories or all were null, use null color
-                    return self.null_color
                 else:
                     # for continuous color maps, average the values
                     try:
@@ -502,11 +522,44 @@ class TreeMetadata():
                         )
                     except TypeError:
                         mean_val = self.null_value
-                    return self.get_color(mean_val)
+                    return mean_val
                     
         # if it's not a clade object, assume it's in the data dict if it has a value
-        return self.get_color(self.data_dict.get(item, self.null_value))
+        return self.data_dict.get(item, self.null_value)
 
+    def get_item_color(self, item):
+        item_value = self.get_item_value(item)
+        if (
+            isinstance(item_value, Counter)
+            and
+            isinstance(item, Phylo.Newick.Clade)
+       ):
+            # this clade was not in the data dict, check to see if it only has
+            # one value
+            categories = item_value
+            #categories = Counter(self.data_dict.get(t.name, self.null_value) 
+            #                       for t in item.get_terminals())
+            non_null = []
+            total, total_non_null = 0, 0
+            for category, count in categories.items():
+                total += count
+                if category != self.null_value:
+                    non_null.append(category)
+                    total_non_null += count
+            if len(non_null) == 1:
+                # get the RGB of the mapped color
+                color = to_rgba(self.get_color(non_null[0]))[:3]
+                # make transparent in proportion to fraction with non-null value
+                alpha = total_non_null / total                        
+                return tuple(list(color) + [alpha,])
+            
+            # too many categories or all were null, use null color
+            return self.null_color
+
+        else:
+            # we should have a single value to apply to the color dict or color
+            # function
+            return self.get_color(item_value)
 
 def draw_tree_metadata(ax, y_posns, metadata_metadata, md_font_size=7, x_labels_on_top=False, thickness=1, collapsed_clade_heights=defaultdict(lambda: 2)):
     """
@@ -558,13 +611,13 @@ def draw_tree_metadata(ax, y_posns, metadata_metadata, md_font_size=7, x_labels_
                    color=colors)
     
     # x axis labels
-    _ = ax.set_xlim([-1,max(x_labels)])
+    _ = ax.set_xlim([-1,max(x_labels) + .5])
     _ = ax.set_xticks(list(x_labels.keys()))
     if x_labels_on_top:
         _ = ax.set_xticklabels(x_labels.values(), rotation=-90, fontsize=md_font_size)
         _ = ax.xaxis.tick_top()
     else:
-        _ = ax.set_xticklabels(x_labels, rotation=90, fontsize=md_font_size)
+        _ = ax.set_xticklabels(x_labels.values(), rotation=90, fontsize=md_font_size)
         
     # clear y axis labels    
     ticks = []
@@ -1227,11 +1280,13 @@ def cluster_synteny_plot(genome_y_vals,
                                                  genome_lens,
                                                 )
 
+    """
     # sync X axes
     ax1.get_shared_x_axes().join(ax1, ax2)
     ax1.set_xticklabels([])
     # ax2.autoscale() ## call autoscale if needed
-    
+    """
+ 
     if isinstance(gene_colors, dict):
         if not isinstance(max_plotted_genes, int):
             # instead of a number of genes, it can be a list/set
@@ -1288,9 +1343,22 @@ def cluster_synteny_plot(genome_y_vals,
     else:
         _ = ax2.set_yticks([])
  
-    if gene_plot_range is not None:
-        ax1.set_xlim(gene_plot_range)
-        ax2.set_xlim(gene_plot_range)
+    if gene_plot_range is None or gene_plot_range == 'genomes':
+        # default: use genome extents
+        gene_plot_range = ax2.get_xlim()
+    elif gene_plot_range == 'genes':
+        gene_plot_range = ax1.get_xlim()
+    else:
+        # just assume it's manually supplied interval
+        pass
+
+    ax1.set_xlim(gene_plot_range)
+    ax2.set_xlim(gene_plot_range)
+
+    # make a second copy of the genome coords at the top
+    ax3 = ax2.twiny()
+    ax3.set_xticks(ax2.get_xticks())
+    ax3.set_xlim(gene_plot_range)
 
     return shifted_genes, gene_colors
 
@@ -1354,7 +1422,7 @@ class TreePlotter():
                     metadata_metadata=None,
                     clade_ratio_dicts=None,
                     draw_genes=False,
-                    max_plotted_genes=10,
+                    max_plotted_genes=None,
                     max_colored_genes=10,
                     collapsed_clade_labels=None,
                     fig_width=None, 
@@ -1384,10 +1452,13 @@ class TreePlotter():
         """
 
         # set some defualts
+        if max_plotted_genes is None:
+            if isinstance(gene_colors, dict):
+                max_plotted_genes = len(gene_colors)
+            else:
+                max_plotted_genes = max_colored_genes
         n_genes = max_plotted_genes if isinstance(max_plotted_genes, int) \
                   else len(max_plotted_genes)
-        if isinstance(gene_colors, dict) and len(gene_colors) < n_genes:
-            n_genes = len(gene_colors)
 
         # calculate the figure and subplot sizes
 
@@ -1396,10 +1467,18 @@ class TreePlotter():
         
         # how much vertical space for the primary tree
         if collapsed_clade_labels:
-            N = len(self.leaves) \
-                 - sum(c.count_terminals() 
-                      for c in collapsed_clade_labels) \
-                 + 2 * len(collapsed_clade_labels)
+            # are there custom clade heights?
+            if "collapsed_clade_heights" in tree_kwargs:
+                N = len(self.leaves)
+                for c in collapsed_clade_labels:
+                    n = c.count_terminals()
+                    h = tree_kwargs['collapsed_clade_heights'].get(c, 2)
+                    N = N - n + h
+            else:
+                N = len(self.leaves) \
+                     - sum(c.count_terminals() 
+                          for c in collapsed_clade_labels) \
+                     + 2 * len(collapsed_clade_labels)
         else:
             N = len(self.leaves)
         tree_height = N/items_per_inch
@@ -1523,6 +1602,7 @@ class TreePlotter():
         return fig
 
     def _find_shadow_clades(self, clade_names):
+        # collect all the ancestors of the clades we have counts for
         ancestors = defaultdict(list)
         clades = set()
         for clade_name in clade_names:
@@ -1536,16 +1616,34 @@ class TreePlotter():
         # are any clades ancestors of other clades?
         for clade_name in clade_names:
             clade = self.get_taxon(clade_name)
+            # if this clade is an ancestor of another clade
             if clade in ancestors:
+                # then: find a child that's not a targeted clade or an ancestor of one
                 for child in clade.children:
-                    # find a child that's not a targeted clade or an ancestor of one
                     if child not in ancestors and child not in clades:
                         # use as shadow clade for collecting other counts
                         clade_shadows[clade_name] = child.name
                         shadows_to_clade[child.name] = clade_name
                         break
                 else:
-                    raise Exception("Can't find a suitable shadow node!")
+                    dummy_name = f".{clade_name}.shadow"
+                    from edl.taxon import TaxNode
+                    dummy = TaxNode(
+                        taxid=max(self.taxonomy.idMap.keys()) + 1,
+                        parentid=clade.id,
+                        rank=None
+                    )
+                    dummy.name = dummy_name
+                    dummy.setParent(clade)
+                    self.taxonomy.idMap[dummy.id] = dummy
+                    print(f'WARNING: there is no unused child taxon for'
+                          f'{clade_name} to use as a shadow. We are '
+                          f'creating a dummy child taxon ({dummy_name}) '
+                          'for making the tree.')
+                    # use as shadow clade for collecting other counts
+                    clade_shadows[clade_name] = dummy_name
+                    shadows_to_clade[dummy_name] = clade_name
+                    
         return clade_shadows, shadows_to_clade
             
     def tree_plot(self, ax_tree, ax_tax, ax_md1, ax_md2,
@@ -1609,8 +1707,9 @@ class TreePlotter():
             step = 1
             _ = ax_tree.set_ylabel("Genome", fontsize=axis_font_size)
             _ = ax_tree.set_xlabel("Branch Length", fontsize=axis_font_size)
-            max_depth = max(self.tree.depths().values())
-            _ = ax_tree.set_xlim(-.5, max_depth + 1.5)
+            #  This is already done in the draw() function and it's less buggy
+            #max_depth = max(self.tree.depths().values())
+            #_ = ax_tree.set_xlim(-.5, max_depth + 1.5)
             
         _ = ax_tree.set_yticks([])
 
@@ -1674,9 +1773,12 @@ class TreePlotter():
 
             draw_tree_metadata(ax_md2, y_posns,
                                            metadata_metadata_2,
-                                             y_axis_names=self.ref_names,
                                            md_font_size=md_font_size,
-                               thickness=step,
+                                   thickness=step,
+                                   collapsed_clade_heights=kwargs.get(
+                                       "collapsed_clade_heights",
+                                       defaultdict(lambda: 2)
+                                   ),
                                           )
 
 

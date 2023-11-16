@@ -31,3 +31,25 @@ Something I've struggled with in jupyter is that, while I use any conda env as a
  * by just importing it, the bash execution PATH (os.environ['PATH']) gets updated to match the kernel's conda env
  * you can 'activate' any other conda env. This is probably reckless as it alters both sys.path and environ['PATH'], but it can be useful
  
+## Testing
+
+I'm writing this for future me. I am testing different testing protocols with
+my personal repositories, so I may not use the same approach anywhere else.
+
+### Running nose
+This is really simple
+
+First build and activate the testing environment defined in tests/test.yml
+
+    $ mamba env create -p ./test.env -f tests/test.yml
+    $ conda activate ./test.env
+
+Then run nosetests
+
+    $ nosetests
+
+### Making tests
+
+See the `nose` documentation, but the short version is that the `nosestests`
+command finds every `*_test.py` file and runs any functions starting with
+`test`.

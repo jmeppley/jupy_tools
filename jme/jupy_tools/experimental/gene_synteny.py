@@ -129,16 +129,15 @@ def plot_annot_positions(gene_data, ax=None, gene_color_dict=None, min_annot_gen
     n = kwargs.get('max_plotted_genes', 18)
     sorted_annot = sorted(list(sorted_genes)[:n], 
                        key=lambda p: numpy.median(list(annot_positions[p])))
-    
+
     # set ax to False to skip plotting
     if ax != False:
         # scatter positions, one row per gene
         i = 0
         for i, p in enumerate(sorted_annot):
             x,y = zip(*((gp,i) for gp in annot_positions[p]))
-            ax.scatter(x,y, 
-                       c=(len(y) * [to_rgba(gene_color_dict.get(p, BLACK)),]),
-                       ec=None, alpha=.5)
+            colors = (len(y) * [to_rgba(gene_color_dict.get(p, BLACK)),])
+            ax.scatter(x,y, c=colors, ec=None, alpha=.5)
         _ = ax.set_yticks(range(len(sorted_annot)))
         ytl = ax.set_yticklabels(sorted_annot)
         for label in ytl:
@@ -160,6 +159,11 @@ def decorate_gene_labels(ax, gene_annots, desc_col):
     
     if isinstance(desc_col, dict):
         vog_descs=desc_col
+    elif callable(desc_col):
+        vog_descs = {
+            v: desc_col(v)
+            for v in gene_annots.annot.values
+        }
     else:
         vog_descs = {}
         for v,d in gene_annots[['annot',desc_col]].values:
@@ -466,6 +470,8 @@ def draw_genes(gene_data, annot_colors,
     arrow_half_width = (thickness / 2) / y_pix_size  # y pixels in 1/2 an arrow
     head_length = arrow_half_width * x_pix_size      # value to get the same # of pixels in x axis
 
+    x_range = None
+
     prev_genome = None
     for name, y in zip(top_M_ordered, genome_y_posns):
         ## TODO: plot genome spines
@@ -484,7 +490,15 @@ def draw_genes(gene_data, annot_colors,
                       head_length=hl, 
                       head_starts_at_zero=(int(strand) > 0))
 
+            xmn, xmx = sorted((ast, ast+al))
+            if x_range is None:
+                x_range = [xmn, xmx]
+            else:
+                x_range[0] = min(xmn, x_range[0])
+                x_range[1] = max(xmx, x_range[1])
+
     y = ax.set_ylim(min_y-y_buff, max_y + thickness + y_buff)
+    x = ax.set_xlim(*x_range)
 
     ax.set_yticks(genome_y_posns)
     ax.set_yticklabels(top_M_ordered)
