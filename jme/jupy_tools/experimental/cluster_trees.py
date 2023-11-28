@@ -404,27 +404,33 @@ class TreeMetadata():
         color_map: str or object
             matplotlib colormap name or object (default: "binary")
         color_method: str or callable
-            either "category" or "cat" (default) 
+            either "category" or "cat" (default) or "fixed" 
             (chooses evenly spaced colors from color_map for each unique value in data_dict)
             or "continuous" or "con"
             (data_dict values msut be in range [0.-1.] or [-255])
             or a callable transformation to convert values to a cmap-suitable range (implyies continuous)
+        size_norm: a function normalizing values to the 0. to 1. interval
+            Reterun a scaling value for bar plots metadata.
+            Defaults to None: (all the same size)
         null_color: :str: or :tuple:
             color for missing values (default: transparent)            
         rename: :dict: or callable or None (default)
             for 'category' metadata, translates category names in
             get_category_colors() (if not None)
     """
+
     label = attr.ib()
     data_dict = attr.ib()
     null_value = attr.ib(default=False)
     color_dict = attr.ib(default=None)
     color_map = attr.ib(default="binary")
     color_method = attr.ib(default="category")
+    size_norm = attr.ib(default=None)
     null_color = attr.ib(default=(1., 1., 1., 0.))
+    relative_size = attr.ib(default=1)
     collapsed_clade_labels = attr.ib(default=None)
     rename = attr.ib(default=None)
-    
+
     def __attrs_post_init__(self):
         """ using the color attributes, set up the get_color method """
         if self.color_dict:
@@ -453,6 +459,37 @@ class TreeMetadata():
                     self.color_map = plt.get_cmap(self.color_map)
                     
                 self.get_color = self._get_color_from_map
+            elif c_method == 'fix':
+                # a fixed color, usually used with sized bars
+
+                # either get the "1.0" value from the color map or interpret
+                # the color_map argumetn as a color
+                # make sure colormap is callable:
+                color_thing, thing_type = TreeMetadata._check_color_map(self.color_map)
+                if thing_type == 'MAP':
+                    fixed_color = color_thing(1.0)
+                else:
+                    fixed_color = color_thing
+
+                self.get_color = lambda x: (
+                    self.null_color 
+                    if x == self.null_value
+                    else fixed_color
+                )
+
+    def _check_color_map(color_map):
+        try:
+            color = to_rgba(color_map)
+            return color, 'COLOR'
+        except ValueError:
+            # it was not a color, so it's a color map
+            if not callable(color_map):
+                try:
+                    color_map = plt.get_cmap(color_map)
+                except ValueError:
+                    raise ValueError("For a fixed color Metadata, pass"
+                                     " either a color or a color_map.")
+            return color_map, 'MAP'
 
     def _use_color_dict(self):
         self.get_color = self._get_color_from_dict
@@ -560,6 +597,23 @@ class TreeMetadata():
             # we should have a single value to apply to the color dict or color
             # function
             return self.get_color(item_value)
+
+    def get_item_size(self, item):
+        item_value = self.get_item_value(item)
+        if (
+            isinstance(item_value, Counter)
+            and
+            isinstance(item, Phylo.Newick.Clade)
+       ):
+            # this clade was not in the data dict, do a weighted mean
+            total, n_non_null = 0, 0
+            for category, count in categories.items():
+                if category == self.null_value or pandas.isna(category):
+                    continue
+                total += count * category
+                n_non_null += count
+            item_value = total / n_non_null
+        return self.size_norm(item_value)
 
 def draw_tree_metadata(ax, y_posns, metadata_metadata, md_font_size=7, x_labels_on_top=False, thickness=1, collapsed_clade_heights=defaultdict(lambda: 2)):
     """

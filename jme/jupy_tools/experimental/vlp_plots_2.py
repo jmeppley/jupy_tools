@@ -915,7 +915,10 @@ class TreePlotterVLP():
         tree, 
         figsize=[12,12], 
         bg_styles_dict={},
+        collapsed_dict={},
+        scale_lines_step=1,
         ring_width=.1,
+        support_md=None
     ):
 
         # get metadata
@@ -924,16 +927,34 @@ class TreePlotterVLP():
 
         fig, ax = plt.subplots(1,1,figsize=figsize)
 
-        ring_order = get_ring_order(tree.root)
+        ring_order = get_ring_order(tree.root, collapsed_dict)
         leaf_arc = 355 / len(ring_order)
         r = recursive_draw(ax, tree.root, leaf_arc=leaf_arc, 
+                           collapsed_dict=collapsed_dict,
+                           support_md=support_md,
                            bg_styles_dict=bg_styles_dict)
+
+
+        # we drew a tree out to a radius of r
+        # let's add some scale lines in the form of circles of unit radii
+        for i in range(0, int(numpy.ceil(r)), scale_lines_step):
+            ax.add_patch(patches.Circle((0,0),
+                                        radius=i, 
+                                        lw=.5, ec='grey', alpha=.7,
+                                        fill=None, zorder=-2))
+
+
 
         
         for mdmd in md_md:
             if mdmd is not None:
-                draw_md_ring(ax, ring_order, mdmd, radius=r, width=ring_width, leaf_arc=leaf_arc)
-                r += ring_width
+                actual_ring_width = draw_md_ring(
+                    ax, ring_order, mdmd, 
+                    radius=r, 
+                    width=ring_width, 
+                    leaf_arc=leaf_arc
+                )
+                r += actual_ring_width
             else:
                 r += ring_width / 2
 
@@ -1040,7 +1061,23 @@ def get_continuous_md(
     color_map='binary',
     log=False,
     log_shift=1e-12,
+    bar_plot=None,
+    **kwargs,
 ):
+    """
+    Generate a continuos TreeMetedata object from a data series
+
+    Calculates a Normalization function to map all values into [0., 1.0]
+
+    If bar_plot is True:
+        * normalization is passed as the size_norm to make a bar plot
+    If bar_plot is None and color_map is a color (not a map):
+        * normalization is passed as the size_norm and the color method is set
+        to "fixed"
+    If bar_plot is False and the color_map is a color:
+        * the color method is dset to 'fixed' and you'll get a useless md
+        object
+    """
     name = data_series.name if label is None else label
     " construct Metadata object from a column of numeric data "
     if log:
@@ -1055,17 +1092,30 @@ def get_continuous_md(
         v_norm = colors.Normalize(vmin=vmin, vmax=vmax, clip=True)
         null_val = None
 
-    v_cmap = plt.get_cmap(color_map) \
-        if isinstance(color_map, str) \
-        else color_map
+    color_thing, thing_type = \
+        cluster_trees.TreeMetadata._check_color_map(color_map)
+
+    if thing_type == "COLOR":
+        color_method = 'fixed'
+        if bar_plot is None:
+            bar_plot = True
+    else:
+        color_method = v_norm
+
+    if bar_plot is True:
+        size_norm = v_norm
+    else:
+        size_norm = None
 
     return cluster_trees.TreeMetadata(
         name,
         values,
         null_value=null_val,
         null_color=[1.,1.,1.,0.,],
-        color_map=v_cmap,
-        color_method=v_norm,
+        color_map=color_thing,
+        color_method=color_method,
+        size_norm=size_norm,
+        **kwargs,
     )
 
 def get_distance_to_mean_length_function(seqs, seq_lens):
@@ -1273,10 +1323,12 @@ def get_clade_style_by_type(clade, style_dict, get_leaf_type, type_styles):
 
     return node_types
 
-def get_ring_order(clade):
+def get_ring_order(clade, collapsed_dict=None):
     if clade.is_terminal():
         return [clade,]
-    return list(chain(*(get_ring_order(child)
+    if collapsed_dict and clade in collapsed_dict:
+        return [clade,]
+    return list(chain(*(get_ring_order(child, collapsed_dict)
                         for child in clade.clades)))
 
 def add_legend(fig, colors_by_label, size=15, **legend_kwargs):
@@ -1357,7 +1409,11 @@ def recursive_draw(ax, clade,
                    offset=(0,0),
                    max_distance=None,
                    unit_branch_lengths=None,
-                   leaf_arc=None):
+                   leaf_arc=None,
+                   debug=False,
+                   zorder=1,
+                   support_md=None,
+                  ):
 
     # some things get set automatically based on the first (root) clade
     if max_distance is None:
@@ -1367,6 +1423,8 @@ def recursive_draw(ax, clade,
             unit_branch_lengths = True
         else:
             unit_branch_lengths = False
+
+        # draw scale
     if style_dicts is None:
         style_dicts = defaultdict(dict)
         if line_styles_dict is not None:
@@ -1396,8 +1454,9 @@ def recursive_draw(ax, clade,
         leaf_arc = total_arc_span / total_segs
 
     if unit_branch_lengths:
+        clade_depths = clade.depths(unit_branch_lengths=True)
         def get_clade_distance(node):
-            return 1
+            return clade_depths[node]
     else:
         get_clade_distance = clade.distance
 
@@ -1423,12 +1482,22 @@ def recursive_draw(ax, clade,
                            (center, center),
                            offset=offset,
                            from_degrees=True,
+                           zorder=zorder,
                            **line_style)
     else:
         tot_distance = distance
 
+    # is this clade collapsed?
+    collapsed = style_dicts['collapsed'].get(clade, None)
+
     # figure out where this clade is
-    N = clade.count_terminals()
+    if collapsed:
+        try:
+            N = float(collapsed)
+        except (ValueError, TypeError):
+            N = collapsed.get('width', min_collapsed_size)
+    else:
+        N = clade.count_terminals()
     start = center - leaf_arc * (N/2)
     end = center + leaf_arc * (N/2)
 
@@ -1444,11 +1513,11 @@ def recursive_draw(ax, clade,
                                   )
                     )
 
-    # is this clade collapsed?
-    collapsed = style_dicts['collapsed'].get(clade, None)
-
     # Yes if there is a nonnull or False value. Empty dict is OK (but would resolve to False)
     if collapsed is not None and collapsed is not False:
+        if debug:
+            print(f"collapsing node ({collapsed})")
+
         # get default style
         # use bg settings with line style overrides
         triangle_style = dict(line_style)
@@ -1474,23 +1543,28 @@ def recursive_draw(ax, clade,
 
         # get triangle shape
         distances = numpy.array([get_clade_distance(t) for t in clade.get_terminals()])
+        if debug:
+            print(f"{len(distances)} distances from {distances.min()} to "
+                  f"{distances.max()}")
         # set up triangle in polar corrdinates
         triangle_verts_polar_unzipped = [
             (tot_distance, tot_distance + distances.max(), tot_distance + distances.min()),
             (center, start, end)
         ]
+        if debug:
+            print(f"Trinagle locs: {triangle_verts_polar_unzipped}")
         # convert to cartesian pairs
         triangle_verts = list(zip(*polar_to_cart(*triangle_verts_polar_unzipped,
                                                  from_degrees=True)))
+        if debug:
+            print(f"Converted trinagle locs: {triangle_verts}")
 
 
-        ax.add_patch(patches.Polygon(triangle_verts, **triangle_style))
+        ax.add_patch(patches.Polygon(triangle_verts,
+                                     zorder=zorder,
+                                     **triangle_style),
+                    )
 
-        # Alternative approach to use PolyCollection to speed things up
-        #ax_patches['collapsed'].append(dict(
-        #    verts=triangle_verts,
-        #    **triangle_style
-        #))
         depths = distances + tot_distance
     else:
         # figure out where children go and draw them
@@ -1514,43 +1588,66 @@ def recursive_draw(ax, clade,
                                leaf_arc=leaf_arc,
                                max_distance=max_distance,
                                unit_branch_lengths=unit_branch_lengths,
+                               zorder=zorder,
+                               support_md=support_md,
+                               debug=debug,
                               )
             depths.append(d)
             last_end = c + w2
 
         # connect children with arc
-        if centers and tot_distance > 0:
-            diameter = tot_distance * 2
-            arc = \
-                patches.Arc(
-                    offset,
-                    width=diameter, height=diameter,
-                    theta1=min(centers),
-                    theta2=max(centers),
-                    **line_style
-                )
-            #ax_patches['arcs'].append(arc)
-            ax.add_patch(arc)
+        if centers:
+            # if it's not the first branch
+            if tot_distance > 0:
+                diameter = tot_distance * 2
+                arc = \
+                    patches.Arc(
+                        offset,
+                        width=diameter, height=diameter,
+                        theta1=min(centers),
+                        theta2=max(centers),
+                        zorder=zorder,
+                        **line_style
+                    )
+                #ax_patches['arcs'].append(arc)
+                ax.add_patch(arc)
+
+            # if there are children and a confidence value
+            if clade.confidence is not None:
+                if support_md:
+                    # color the branch point by confidence
+                    annotate_clade_support(ax,
+                                           clade.confidence, 
+                                           center,
+                                           tot_distance,
+                                           support_md)
 
 
     if add_patches_on_exit:
-        ax.add_collection(collections.PatchCollection(ax_patches['wedges'], match_original=True))
-        #ax.add_collection(collections.PatchCollection(ax_patches['arcs']))
+        ax.add_collection(collections.PatchCollection(ax_patches['wedges'],
+                                                      zorder=zorder,
+                                                      match_original=True),
+                         )
 
-        """
-        # collapsed triangles take a little massaging
-        if 'collapsed' in ax_patches:
-            triangle_data = defaultdict(list)
-            all_keys = set(chain(*(t.keys() for t in ax_patches['collapsed'])))
-            for triangle in ax_patches['collapsed']:
-                for key in all_keys:
-                    if key not in triangle:
-                        raise Exception(f'All collapsed clade styles must have the same keys. Key {key} is missing.')
-                    triangle_data[TRIANGLE_KEY_MAP[key]].append(triangle[key])
-            triangle_data['closed'] = True
-            ax.add_collection(collections.PolyCollection(**triangle_data))
-        """
     return max(depths)
+
+
+def annotate_clade_support(ax, confidence, theta, radius, support_md):
+    """
+    draw a circle at (theta, radius) colored by confidence and support_md
+    """
+    x, y = polar_to_cart(radius, theta, from_degrees=True)
+    ax.scatter(x, y, color=support_md.get_color(confidence), **support_md.plot_args)
+
+class SupportMetadata():
+    def __init__(self, **kwargs):
+        self.color_params = kwargs.pop('color_params', {})
+        self.color_map = plt.get_cmap(self.color_params.get('color_map',
+                                                            'binary'))
+        self.plot_args = kwargs
+
+    def get_color(self, confidence):
+        return self.color_map(confidence)
 
 def get_min_max(values):
     mn, mx = None, None
@@ -1565,6 +1662,7 @@ def get_min_max(values):
 # Set up collapsed clades
 
 def draw_md_ring(ax, ring_order, mdmd, radius=3, width=.1, center=180, leaf_arc=None, offset=[0,0]):
+    width = width * mdmd.relative_size
     N = len(ring_order)
     if leaf_arc is None:
         leaf_arc = 340 / N
@@ -1573,12 +1671,16 @@ def draw_md_ring(ax, ring_order, mdmd, radius=3, width=.1, center=180, leaf_arc=
     start = center - leaf_arc * (N/2)
     for leaf in ring_order:
         color = mdmd.get_item_color(leaf.name)
+        if mdmd.size_norm is not None:
+            leaf_size = mdmd.get_item_size(leaf) * width
+        else:
+            leaf_size = width
         end = start + leaf_arc
         ax_patches.append(patches.Wedge(offset,
                                    r=radius,
                                    theta1=start,
                                    theta2=end,
-                                   width=-width,
+                                   width=-leaf_size,
                                    fc=color,
                                    ec=None,
                                   )
@@ -1586,4 +1688,5 @@ def draw_md_ring(ax, ring_order, mdmd, radius=3, width=.1, center=180, leaf_arc=
         start = end
 
     ax.add_collection(collections.PatchCollection(ax_patches, match_original=True))
+    return width
 
