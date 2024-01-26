@@ -435,6 +435,8 @@ class TreeMetadata():
         """ using the color attributes, set up the get_color method """
         if self.color_dict:
             self._use_color_dict()
+            # make a copy
+            self.color_dict = dict(self.color_dict)
         else:
             if isinstance(self.color_method, str):
                 c_method = self.color_method.lower()[:3]

@@ -43,7 +43,7 @@ import json
 import numpy
 import pandas
 
-from pandas.api.types import is_numeric_dtype
+from pandas.api.types import is_numeric_dtype, is_bool_dtype
 
 from collections import defaultdict
 
@@ -64,6 +64,10 @@ GM_TOP = 'top'
 GM_TYPES = 'types'
 GM_MERGE = 'merge'
 
+CN_REFS = 'refs'
+CN_HOSTS = 'host'
+CN_CUSTOM = 'cust'
+
 class TreePlotterVLP():
     def __init__(
         self,
@@ -82,8 +86,9 @@ class TreePlotterVLP():
         override_gene_descs=None,
         parents=None,
         type_patterns=None,
+        debug=False,
     ):
-        self.debug = False
+        self.debug = debug
 
         # load TSVs
         #  (if filenames are not passed, assume its a DataFrame)
@@ -162,8 +167,11 @@ class TreePlotterVLP():
         if 'leaf_color' in self.plot_metadata['genomes']:
             # User can speicy a TreeMetadatra config in
             # plot_metadaat['genomes']['leaf_color']
+            md_params = self.plot_metadata['genomes']['leaf_color']
+            if debug:
+                print("Making leaf color md from:\n" + str(md_params))
             self.leaf_color_md = \
-                self.get_tree_metadata(**self.plot_metadata['genomes']['leaf_color'])
+                self.get_tree_metadata(**md_params)
         else:
             # Otherwise we look for a seq_type metadata in the genome metadata
             leaf_color_col = seq_type_col
@@ -179,9 +187,17 @@ class TreePlotterVLP():
             else:
                 leaf_md_index = None
             if leaf_md_index is not None:
-                self.leaf_color_md = self.metadata_metadata_all[leaf_md_index]
+                # make a copy of the metadata object that defaults to black
+                leaf_md_props = dict(md_props)
+                leaf_md_props['null_color'] = 'black'
+                if debug:
+                    print("Making leaf color md from seq type params:\n" +
+                          str(leaf_md_props))
+                self.leaf_color_md = self.get_tree_metadata(**leaf_md_props)
             else:
                 # if we find nothing, let everything be written in black
+                if debug:
+                    print("No leaf meatadarta found...making everything black")
                 self.leaf_color_md = None
         leaf_color_fn = self.leaf_color_md.get_item_color \
                         if self.leaf_color_md is not None \
@@ -243,6 +259,39 @@ class TreePlotterVLP():
         return top_genes
 
     def get_collapsed_nodes(
+        self, tree,
+        **kwargs
+    ):
+        """
+        There are 2 ways to collapse nodes:
+        
+         * By default, collapse ref clades, breaking up by cluster if a clusters_col is set
+         * Custom: if a check_clade_fn is passed, collapse only if that function returns a label
+         
+         """
+        if "check_clade_fn" in kwargs:
+            check_clade_fn = kwargs.pop("check_clade_fn")
+            collapsed_nodes = get_collapsed_nodes(tree,
+                                                  check_clade_fn,
+                                                  self.leaf_color_md,
+                                                  debug=self.debug,
+                                                  **kwargs)
+        else:
+            collapsed_nodes = self.get_collapsed_nodes_refs(tree, **kwargs)
+        
+        if collapsed_nodes is not None:
+            # set_clade_heights
+            biggest_clade = max(len(c.get_terminals()) for c in collapsed_nodes)
+            collapsed_node_heights = {
+                c:numpy.interp(len(c.get_terminals()), [2, biggest_clade], [2,5])
+                for c in collapsed_nodes
+            }
+            return collapsed_nodes, collapsed_node_heights
+        
+        # if there were no collapsed nodes
+        return None, None
+        
+    def get_collapsed_nodes_refs(
         self, tree, 
         max_d_cutoff=1.5, 
         non_ref_label='Novel',
@@ -362,16 +411,9 @@ class TreePlotterVLP():
                 (len(next(iter(collapsed_nodes)).get_terminals()) == len(tree.get_terminals()))
             )
         ):
-            return None, None
+            return None
 
-        # set_clade_heights
-        biggest_clade = max(len(c.get_terminals()) for c in collapsed_nodes)
-        collapsed_node_heights = {
-            c:numpy.interp(len(c.get_terminals()), [2, biggest_clade], [2,5])
-            for c in collapsed_nodes
-        }
-
-        return collapsed_nodes, collapsed_node_heights
+        return collapsed_nodes
 
     def get_type(self, gene_annot):
         return get_type(gene_annot, self.type_patterns)
@@ -1008,7 +1050,12 @@ def get_tree_metadata(
         seqs = set(seqs).intersection(data_series.index)
 
     if md_type is None:
-        md_type = 'cont' if is_numeric_dtype(data_series) else 'cat'
+        md_type = 'cont' \
+            if (is_numeric_dtype(data_series) 
+                and 
+                not is_bool_dtype(data_series)
+               )\
+            else 'cat'
     if md_type.lower().startswith('cont'):
         return get_continuous_md(data_series, seqs, **kwargs)
     else:
@@ -1039,6 +1086,9 @@ def get_cat_md(data_series,
             uniq,
             get_N_colors(N, color_map)
         ))
+        
+        # if there is no value, it should be transparent
+        kwargs.setdefault('null_color', [1., 1., 1., 0.])
     return cluster_trees.TreeMetadata(
         label,
         data_dict=data_dict,
@@ -1346,6 +1396,84 @@ def add_legend(fig, colors_by_label, size=15, **legend_kwargs):
                       **legend_kwargs)
 
 from matplotlib.colors import to_rgb, to_rgba
+
+def get_collapsed_nodes(
+    tree, 
+    check_clade_fn,
+    leaf_color_md,
+    max_d_cutoff=1.5, 
+    min_clade_size=3,
+    debug=False,
+):
+    """
+    Collapse clades.
+
+    The params are:
+
+     * check_clade_fn: a callable that returns:
+         None if the clade should not be collapsed
+         If collapsed, then either:
+             label: just the name for the calde
+             label, color_label: the name and the value to look up in leaf_color_md
+    """
+        
+    collapsed_nodes = {}
+
+    if debug:
+        counts = Counter()
+
+    # loop over clades (exclude single terminals)
+    for clade in tree.get_nonterminals():
+        if debug:
+            counts['clades_all'] += 1
+
+        # no nested collapsed clades
+        for c in collapsed_nodes:
+            if c.is_parent_of(clade):
+                skip = True
+                break
+        else:
+            skip = False
+        if skip:
+            continue
+
+        if debug:
+            counts['clades_checked'] += 1
+
+        # get the seq names from this clade
+        label = check_clade_fn(clade)
+        if label is None:
+            continue
+        
+        if debug:
+            counts['clades_collapsed'] += 1
+            counts['leaves_collapsed'] += clade.count_terminals()
+    
+        if isinstance(label, tuple) and len(label) == 2:
+            label, leaf_color_value = label
+            
+            # add clade to leaf_color_md object
+            if leaf_color_md is not None:
+                leaf_color_md.data_dict[clade] = leaf_color_value
+            
+        collapsed_nodes[clade] = label
+                    
+    if debug:
+        print(counts)
+
+    # return None if set of clades is empty or a single clade that is the whole tree
+    if (
+        (len(collapsed_nodes) == 0)
+        or
+        (
+            (len(collapsed_nodes) == 1)
+            and
+            (len(next(iter(collapsed_nodes)).get_terminals()) == len(tree.get_terminals()))
+        )
+    ):
+        return None
+
+    return collapsed_nodes
 
 def get_collapsed_clades_source_host(
     tree,
