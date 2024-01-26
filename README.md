@@ -30,7 +30,16 @@ Something I've struggled with in jupyter is that, while I use any conda env as a
 
  * by just importing it, the bash execution PATH (os.environ['PATH']) gets updated to match the kernel's conda env
  * you can 'activate' any other conda env. This is probably reckless as it alters both sys.path and environ['PATH'], but it can be useful
+
+### nb_searcher
+
+A tool for finding notebooks by pattern matching in file names and file
+contents. It's still crude, but I find it useful.
+
+### hit_tables
  
+Tools for parsing tables in paf or blast output formats into pandas dataframes.
+
 ## Testing
 
 I'm writing this for future me. I am testing different testing protocols with

@@ -64,6 +64,18 @@ NOTEBOOK_FILTERS = _process_filter(
 
 @attr.s
 class NotebookSearcher():
+    """
+    Can search a tree of jupyter nobooks on both file names and file contents 
+
+    Instantiate with your notebook dir:
+
+        nb_searcher = NotebookSearcher('/path/to/notebooks')
+
+    (The default is /home/user/notebooks).
+
+    use nb_searcher.find_notebooks() to search.
+    """
+
     notebook_root = attr.ib(default=f'{HOME}/notebooks')
     
     def find_notebooks(
