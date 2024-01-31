@@ -28,8 +28,8 @@ I sort of reverse-engineered the super useful glob_wildcards method from snakema
 ### conda
 Something I've struggled with in jupyter is that, while I use any conda env as a kernel for any notebook, it does't pick up the BASH execution path. So I can't. for example, just run minimap2 with a bang (!minimap2). This module does two things:
 
- * by just importing it, the bash execution PATH (os.environ['PATH']) gets updated to match the kernel's conda env
- * you can 'activate' any other conda env. This is probably reckless as it alters both sys.path and environ['PATH'], but it can be useful
+ * by just importing it, the bash execution PATH (os.environ['PATH']) gets updated to match the kernel's conda env. You will now be able to run any command line programs installed in your conda env.
+ * you can 'activate' any other conda env. This is probably reckless as it alters both sys.path and environ['PATH'], but it can be useful. Only use this to run command line programs. Attempting to load python modules from other environments is almost certain to cause problems.
 
 ### nb_searcher
 
@@ -39,6 +39,33 @@ contents. It's still crude, but I find it useful.
 ### hit_tables
  
 Tools for parsing tables in paf or blast output formats into pandas dataframes.
+
+### imports
+Importing names from the root module:
+
+    > from jme.jupy_tools import *
+
+gives you the following in your namespace:
+
+```(python)
+# the most useful things from this package
+from jme.jupy_tools import conda, hit_tables
+from jme.jupy_tools.filesystem import glob_wildcards, go_to_dir
+from jme.jupy_tools.utils import LogLogger, first, read_tsv, get_seq_lens, \
+                                 save_fig_to_pdf
+
+# things I use often in jupyter
+from collections import Counter, defaultdict
+from itertools import islice, combinations, chain
+
+import pandas, numpy, os, sys, re, yaml
+from Bio import SeqIO
+from matplotlib import pyplot as plt
+import seaborn as sns
+```
+
+I dont know why I use the full names of pandas an numpy but I abbreviate
+seaborn, but I do.
 
 ## Testing
 
