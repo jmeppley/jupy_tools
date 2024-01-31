@@ -171,8 +171,9 @@ def activate(env, set_python_path=False, set_shell_path=True, debug=False):
     PREVIOUS_ENVS.append(current_env)
 
 
-def deactivate():
+def deactivate(debug=False):
     """ revert to previous state of sys.path and os.environ[PATH] """
+    global active_env
     prev_env = PREVIOUS_ENVS.pop(-1)
     os.environ["PATH"] = prev_env["path"]
     sys.path = prev_env["pypath"]
