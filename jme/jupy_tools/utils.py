@@ -5,7 +5,6 @@ import numpy
 import pandas
 import subprocess
 from collections import defaultdict
-from  Bio import SeqIO
 from matplotlib import pyplot as plt
 
 def parse_eggnog_annotations(eggnog_annot_file, skiprows=4,
@@ -268,9 +267,6 @@ def get_dataframe_from_cmd(command, shell=True, sep='\t', **kwargs):
     return pandas.read_csv(io.BytesIO(p.stdout),
                            sep=sep, 
                            **kwargs)
-
-def get_seq_lens(sequence_file, format='fasta'):
-    return {r.id:len(r) for r in SeqIO.parse(sequence_file, format=format)}
 
 def parse_prinseq_stats(stats_file):
     return pandas.read_csv(

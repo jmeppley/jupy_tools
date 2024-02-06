@@ -3,7 +3,10 @@ Plot read hit positions over reference sequences
 """
 import re, numpy
 from matplotlib.pyplot import cm
-from edl import blastm8
+try:
+    from edl import blastm8
+raise ModuleNotFoundException:
+    print("Please install jmeppley::py_metagenomics to use this module")
 
 def remove_overlapping_hits(hits, on_hit=True, buffer=0):
     regions = []

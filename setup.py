@@ -19,8 +19,8 @@ setup(name=NAME,
       maintainer_email=MAINTAINER_EMAIL,
       url=URL,
       license=LICENSE,
-	  packages=find_namespace_packages(include=['jme.*']),
-      install_requires=['pandas', 'matplotlib', 'biopython'],
+      packages=find_namespace_packages(include=['jme.*']),
+      install_requires=['pandas', 'matplotlib', 'ipykernel'],
       classifiers=[
           'Development Status :: 3 - Alpha',
           'Environment :: Console',
@@ -29,4 +29,3 @@ setup(name=NAME,
           'Natural Language :: English',
           'Programming Language :: Python :: 3.7'],
       )
-
