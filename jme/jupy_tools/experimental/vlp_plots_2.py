@@ -42,6 +42,7 @@ Code for drawing circularized trees of genes
 import json
 import numpy
 import pandas
+import random
 
 from pandas.api.types import is_numeric_dtype, is_bool_dtype
 
@@ -960,6 +961,7 @@ class TreePlotterVLP():
         collapsed_dict={},
         scale_lines_step=1,
         ring_width=.1,
+        min_collapsed_size=2,
         support_md=None
     ):
 
@@ -969,11 +971,13 @@ class TreePlotterVLP():
 
         fig, ax = plt.subplots(1,1,figsize=figsize)
 
-        ring_order = get_ring_order(tree.root, collapsed_dict)
+        ring_order = get_ring_order(tree.root, collapsed_dict,
+                                    min_collapsed_size)
         leaf_arc = 355 / len(ring_order)
-        r = recursive_draw(ax, tree.root, leaf_arc=leaf_arc, 
+        r = _draw_circular_tree_recursive(ax, tree.root, leaf_arc=leaf_arc, 
                            collapsed_dict=collapsed_dict,
                            support_md=support_md,
+                           min_collapsed_size=min_collapsed_size,
                            bg_styles_dict=bg_styles_dict)
 
 
@@ -1009,7 +1013,7 @@ class TreePlotterVLP():
 
         _ = ax.set_title(tree_name, pad=30)
         
-        return fig
+        return fig, md_md
 
 def add_cat_md_legend(label, values_colors, fig, **legend_kwargs):
     patches = []
@@ -1373,12 +1377,16 @@ def get_clade_style_by_type(clade, style_dict, get_leaf_type, type_styles):
 
     return node_types
 
-def get_ring_order(clade, collapsed_dict=None):
+def get_ring_order(clade, collapsed_dict=None, min_collapsed_size=2):
+    if clade in collapsed_dict or clade.name in collapsed_dict:
+        N = int(_get_clade_size(collapsed_dict.get(clade,
+                                                   collapsed_dict.get(clade.name)),
+                               min_collapsed_size)[0])
+        return [clade,]*N
     if clade.is_terminal():
         return [clade,]
-    if collapsed_dict and clade in collapsed_dict:
-        return [clade,]
-    return list(chain(*(get_ring_order(child, collapsed_dict)
+    return list(chain(*(get_ring_order(child, collapsed_dict,
+                                       min_collapsed_size)
                         for child in clade.clades)))
 
 def add_legend(fig, colors_by_label, size=15, **legend_kwargs):
@@ -1521,8 +1529,75 @@ def get_collapsed_clades_source_host(
             collapsed_leaves.update(clade.get_terminals())
     return collapsed_clades
 
+def _check_triangle(v0, v1, v2):
+    """
+        # check if the triangle is inverted
+        #  IE does the line between v1 and v2 pass between v0 and the origin?
+    """
+    # the slope of the line from the origin to v0 (its intercept is 0)
+    slope_0 = v0[1] / v0[0]
+    # The slop of the line between v1 and v2
+    slope_12 = (v1[1] - v2[1])/(v1[0] - v2[0])
+    # its intercept
+    intercept_12 = v1[1] - slope_12 * v1[0]
+    # where the 2 lines intercet
+    # m1x + b1 = m2x + b2
+    # (m1 - m2)x = b2 - b1
+    x_intersect = intercept_12 / (slope_0 - slope_12)
+
+    return abs(x_intersect) > abs(v0[0])
+
+
+def _get_clade_size(collapsed_data, min_collapsed_size):
+    """
+    Pull the clade size from the collapsed data
+    
+    collapsed_data is one of:
+        int or float indicating size
+        dict with a numeric 'width' entry
+
+    any remaining dit entries are return as collapsed_style:
+        return clade_size, collapsed_style
+    """
+    # collapsed value could be one of: True, an integer, or a style
+    if isinstance(collapsed_data, bool):
+        clade_size = min_collapsed_size
+        collapsed_style = {}
+    else:
+        try:
+            clade_size = max(float(collapsed_data), min_collapsed_size)
+            collapsed_style = {}
+        except (ValueError, TypeError):
+            # assume it is a dict
+            collapsed_style = dict(collapsed_data)
+            # pull width from dict (if it's there)
+            try:
+                clade_size = max(collapsed_style.pop('width'), min_collapsed_size)
+            except KeyError:
+                clade_size = min_collapsed_size
+    return clade_size, collapsed_style
+
+def _get_clade_sizes(clade, collapsed_dict=None, min_collapsed_size=2):
+    if clade in collapsed_dict or clade.name in collapsed_dict:
+        N = int(_get_clade_size(collapsed_dict.get(clade,
+                                                   collapsed_dict.get(clade.name)),
+                               min_collapsed_size)[0])
+        return {clade:N}
+    if clade.is_terminal():
+        return {clade:1}
+    clade_sizes = {}
+    clade_size = 0
+    for child in clade.clades:
+        clade_sizes.update(
+            _get_clade_sizes(child, collapsed_dict,
+                                       min_collapsed_size)
+        )
+        clade_size += clade_sizes[child]
+    clade_sizes[clade] = clade_size
+    return clade_sizes
+
 default_line_style = dict(color='k', lw=.5)
-def recursive_draw(ax, clade,
+def _draw_circular_tree_recursive(ax, clade,
                    distance=0,
                    ax_patches=None,
                    last_distance=None,
@@ -1542,6 +1617,10 @@ def recursive_draw(ax, clade,
                    zorder=1,
                    support_md=None,
                   ):
+    """
+    NOTE: if leaf_arc is supplied, the collapsed_dict muct be keyed on clade
+    objects, not names!
+    """
 
     # some things get set automatically based on the first (root) clade
     if max_distance is None:
@@ -1552,7 +1631,6 @@ def recursive_draw(ax, clade,
         else:
             unit_branch_lengths = False
 
-        # draw scale
     if style_dicts is None:
         style_dicts = defaultdict(dict)
         if line_styles_dict is not None:
@@ -1561,25 +1639,44 @@ def recursive_draw(ax, clade,
             style_dicts['bg'] = bg_styles_dict
         if collapsed_dict is not None:
             style_dicts['collapsed'] = collapsed_dict
+
+    if 'clade_sizes' not in style_dicts:
+        style_dicts['clade_sizes'] = _get_clade_sizes(clade, 
+                                                      style_dicts['collapsed'],
+                                                      min_collapsed_size
+                                                     )
+        _n = len(style_dicts['clade_sizes'])
+        if debug:
+            print(f"N clade sizes: {_n}\n({clade.count_terminals()})")
     if leaf_arc is None:
+        # clean up collapsed dict and calculate arc of each thing
         # how many arc segments total
-        total_segs = clade.count_terminals()
+        total_size = 0 # clade.count_terminals()
 
         # for collapsed nodes, replace leaf count with collapsed size
         skip_nodes = set()
-        for cl, cdata in style_dicts['collapsed'].items():
-            try:
-                c_size = float(cdata)
-            except (ValueError, TypeError):
-                c_size = cdata.get('width', min_collapsed_size)
+        for cld in clade.get_nonterminals() + clade.get_terminals():
+            # is clade collapsed? get the data
+            if cld in style_dict['collapsed']:
+                cdata = style_dict['collapsed'][cld]
+                style_dict['collapsed'][cld.name] = cdata
+            elif cld.name in style_dict['collapsed']:
+                cdata = style_dict['collapsed'][cld.name]
+                # add duplicate entry with clade object
+                style_dict['collapsed'][cld] = cdata
+            else:
+                # clade is not collapsed
+                if cld.is_terminal():
+                    total_size += 1
+                continue
             # don't consider clades inside other collapsed clades
             if not any(t in skip_nodes for t in cl.get_terminals()):
-                c_size = max(int(c_size), min_collapsed_size)
-                total_segs += c_size - cl.count_terminals()
+                c_size, _ = _get_clade_size(cdata, min_collapsed_size)
+                total_size += c_size
                 skip_nodes.update(cl.get_terminals())
 
         # get fraction of requested span
-        leaf_arc = total_arc_span / total_segs
+        leaf_arc = total_arc_span / total_size
 
     if unit_branch_lengths:
         clade_depths = clade.depths(unit_branch_lengths=True)
@@ -1619,15 +1716,11 @@ def recursive_draw(ax, clade,
     collapsed = style_dicts['collapsed'].get(clade, None)
 
     # figure out where this clade is
-    if collapsed:
-        try:
-            N = float(collapsed)
-        except (ValueError, TypeError):
-            N = collapsed.get('width', min_collapsed_size)
-    else:
-        N = clade.count_terminals()
+    N = style_dicts['clade_sizes'][clade]
     start = center - leaf_arc * (N/2)
     end = center + leaf_arc * (N/2)
+    if debug:
+        print((clade.count_terminals() if clade.name is None else clade.name), N, start, center, end)
 
     # if clade has a background set
     bg_style = style_dicts['bg'].get(clade, None)
@@ -1646,28 +1739,19 @@ def recursive_draw(ax, clade,
         if debug:
             print(f"collapsing node ({collapsed})")
 
+        triangle_width, collapsed_style_data = \
+            _get_clade_size(collapsed, min_collapsed_size)
+
+        # otherwise, use the clade size as the width
         # get default style
         # use bg settings with line style overrides
         triangle_style = dict(line_style)
         if bg_style is not None:
             triangle_style.update(bg_style)
 
-        # collapsed value could be one of: True, an integer, or a style
-        if isinstance(collapsed, bool):
-            triangle_width = min_collapsed_size
-        else:
-            try:
-                triangle_width = max(float(collapsed), min_collapsed_size)
-            except (ValueError, TypeError):
-                # assume it is a dict
-                collapsed_style = dict(collapsed)
-                # pull width from dict (if it's there)
-                try:
-                    triangle_width = max(collapsed_style.pop('width'), min_collapsed_size)
-                except KeyError:
-                    triangle_width = min_collapsed_size
-                # use rest of dict to update style
-                triangle_style.update(collapsed_style)
+        # we pulled any style data from the collapsed dict earlier.
+        # Add it here:
+        triangle_style.update(collapsed_style_data)
 
         # get triangle shape
         distances = numpy.array([get_clade_distance(t) for t in clade.get_terminals()])
@@ -1687,12 +1771,23 @@ def recursive_draw(ax, clade,
         if debug:
             print(f"Converted trinagle locs: {triangle_verts}")
 
-
-        ax.add_patch(patches.Polygon(triangle_verts,
-                                     zorder=zorder,
-                                     **triangle_style),
+        if _check_triangle(*triangle_verts):
+            ax.add_patch(patches.Polygon(triangle_verts,
+                                         zorder=zorder,
+                                         **triangle_style),
+                        )
+        else:
+            ax.add_patch(
+                    patches.Arc(
+                        offset,
+                        width=tot_distance*2,
+                        height=tot_distance*2,
+                        theta1=start,
+                        theta2=end,
+                        zorder=zorder,
+                        **line_style
                     )
-
+            )
         depths = distances + tot_distance
     else:
         # figure out where children go and draw them
@@ -1701,11 +1796,12 @@ def recursive_draw(ax, clade,
         depths = [tot_distance,]
         for child in clade.clades:
             d = get_clade_distance(child)    # radial distance
-            n = child.count_terminals()  # how many leaves
-            w2 = n * leaf_arc / 2        # 1/2 angle covered
-            c = last_end + w2            # center (half from previous end)
+            clade_size = style_dicts['clade_sizes'][child]
+            w2 = clade_size * leaf_arc / 2        # 1/2 angle covered
+            c = last_end + w2                     # center (half from previous end)
             centers.append(c)
-            d = recursive_draw(ax, child,
+            d = _draw_circular_tree_recursive(
+                               ax, child,
                                ax_patches=ax_patches,
                                distance=d,
                                last_distance=tot_distance,

@@ -21,27 +21,118 @@ from jme.jupy_tools.utils import get_N_colors
 
 BLACK = (0., 0., 0., 1.)
 
+## Code for parsing faa headers from prodigal or phanotate
+# the regular expressions for 3 different cases
+
+# older phanotate
+PHAN_REXP_1 = re.compile(
+    r"""
+    ^>((\S+)(?<!_CDS)(?:_CDS)?_\[
+                        # genome name followed by a "_["
+                        # strip any trailing _CDS tag
+    (complement)?\(?    # if reversed
+    (\d+)\.\.(\d+)      # location
+    \)?\]               # close the complement and location brackets
+    )\s+                # close the gene name capture group
+    \[note=score:([^:=;]+)\]
+    \s*$                # goes to the end
+    """,
+    re.VERBOSE
+)
+# newer phanotate
+PHAN_REXP_2 = re.compile(
+    r"""
+    ^>((\S+)(?<!_CDS)(?:_CDS)?\.(\d+)
+                        # genome name followed by a ".{end}"
+                        # strip any trailing _CDS tag
+    )\s+                # close the gene name capture group
+    \[START=(\d+)\]     # start
+    \s+
+    \[SCORE=([^\]]+)\]  # score
+    \s*$                # goes to the end
+    """,
+    re.VERBOSE
+)
+# prodigal
+# >{genome}_{num} # {start} # {end} # {strand} # {data}
+PROD_REXP = re.compile(r'^>((\S+)_\d+)\s+#\s+(\d+)\s+#\s+(\d+)\s+#\s+(-?1)\s+#\s+(\S.+)\s*$')
+
+def _parse_faa_header_phanotate_1(line):
+    gene, genome, strand, start, end, score = PHAN_REXP_1.search(
+        line
+    ).groups()
+    start, end = (int(v) for v in (start, end))
+    strand = "1" if (strand is None or strand.strip() == "") else "-1"
+    score = float(score)
+    return gene, genome, start, end, strand, score
+
+def _parse_faa_header_phanotate_2(line):
+    gene, genome, start, end, score = PHAN_REXP_2.search(
+        line
+    ).groups()
+    start, end = (int(v) for v in (start, end))
+    if start > end:
+        strand = "-1"
+        start, end = end, start
+    else:
+        strand = "1"
+    score = float(score)
+    return gene, genome, start, end, strand, score
+
+def _parse_faa_header_prodigal(line):
+    gene, genome, start, end, strand, data = PROD_REXP.search(
+        line,
+    ).groups()
+    start, end = (int(v) for v in (start, end))
+    data_dict = dict(tuple(e.split('=')) for e in data.split(';'))
+    score = data_dict.pop('score', -1)
+    return gene, genome, start, end, strand, score, data_dict
+
+def parse_faa_header(line):
+    for gene_caller, parser in (
+        ('phanotate', _parse_faa_header_phanotate_1),
+        ('phanotate', _parse_faa_header_phanotate_2),
+        ('prodigal', _parse_faa_header_prodigal),
+    ):
+        try:
+            gene, genome, start, end, strand, score = parser(line)[:6]
+            break
+        except AttributeError:
+            continue
+
+    return gene, genome, start, end, strand, score, gene_caller
+
+
 def import_genes(faa_file, annot_dict, genome_name_map=None):
     """
+    This now supports 3 formats of faa headers:
+      * prodigal: >{genome}_{gene_num} # {start} # {end} # {strand} ...
+      * phanotate(old): >{genome}_{span} {score}
+      * phanotate(newer): >{genpme}_{start} {end} {score}
+
     params:
-        a faa file from prodigal (with start # end # strand in the header)
+        a faa file from phanotate or prodigal (with start/end data encoded in the headers)
         a dict from gene id to annotation tag (PFAM, EggNOG, etc)
         an optional dict renaming contig or genomes
     returns:
         a dataframe of gene annotations suitable for the following functions
     """
-    # we'll have to parse the gff or faa file
     gene_rows = []
+    genome_counts = Counter()
     with open(faa_file) as faa_lines:
         for line in faa_lines:
             if line.startswith(">"):
-                gene, start, end, strand, *_ = [s.strip() for s in line[1:].split("#")]
-                genome, gene_no = re.search(r'^(.+)_(\d+)$', gene).groups()
-                start, end, strand, gene_no = [int(x) for x in [start, end, strand, gene_no]]
+                gene, genome, start, end, strand, score, gene_caller = parse_faa_header(line)
+                genome_counts[genome] += 1
+                gene_no = genome_counts[genome]
+                std_gene_name = f"{genome}_{gene_no}"
                 if genome_name_map is not None:
                     genome = genome_name_map[genome]
-                gene_rows.append((gene, genome, gene_no, start, end, strand, annot_dict.get(gene, "")))
-    return pandas.DataFrame(gene_rows, columns=['gene','genome', 'gene_no', 'start', 'end', 'strand', 'annot']).set_index('gene')
+                gene_rows.append((std_gene_name, gene, genome, gene_no, start, end, strand,
+                                  gene_caller, annot_dict.get(gene, "")))
+    return pandas.DataFrame(gene_rows, columns=['gene','faa_name','genome', 'gene_no',
+                                                'start', 'end', 'strand',
+                                                'gene_caller', 'annot']).set_index('gene')
 
 def get_cluster_genes(gene_data, cluster, genome_lens, ):
     """

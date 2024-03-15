@@ -938,6 +938,7 @@ def draw(
         return depths
 
 
+        """
         ## TODO: this is never reached!
         # map terminals to any collapsed parent clades
         # and count how many rows the collapsed clades will take up
@@ -951,7 +952,7 @@ def draw(
             # otherwise all collapsed clades take up one row
             collapsed_clade_heights = {c:1 for c in collapsed_clades 
                                        if c not in redundant_collapsed_clades}
-
+        """
 
     def get_y_positions(tree, collapsed_clade_heights):
         """Create a mapping of each clade to its vertical position.
@@ -959,8 +960,6 @@ def draw(
         Dict of {clade: y-coord}.
         Coordinates are negative, and integers for tips.
         """
-
-
         if collapsed_clade_heights:
             # flag all terminals to be hidden
             collapsed_terminals = {}
