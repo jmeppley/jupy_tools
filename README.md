@@ -9,6 +9,32 @@ This started as just a subfolder in my notebooks, but I'm spinning it out into a
 
 The experimental folder will have newer code that's only been used a couple times and will proably change a lot as I generalize and/or improve it.
 
+## installation
+
+Use conda (from my personal channel):
+
+    conda install -c jmeppley jupy_tools
+
+Or github + pip:
+
+    git clone https://github.com/jmeppley/jupy_tools
+    cd jupy_tools
+    pip install -e .
+
+### dependencies
+You must have the following installed (which conda will install for you):
+
+ * pandas
+ * matplotlib
+ * ipykernel
+
+The following are used by certain submodules, but are not required otherwise.
+
+ * biopython 
+ * scipy
+ * scikit-learn
+ * py_metagenomics (also from the jmeppley channel)
+
 ## Caveat
 This repo is primarily intended for me, but I'm happy to share it. I find some of these really helpful, and maybe you will, too. However, there is no guarantee a consistent API. Stuff in experimental/ is almost guaranteed to change. Everything else *should* be more stable, but I make no promises.  
 
@@ -43,7 +69,7 @@ Tools for parsing tables in paf or blast output formats into pandas dataframes.
 ### imports
 Importing names from the root module:
 
-    > from jme.jupy_tools import *
+    > from jme.jupy_tools.faves import *
 
 gives you the following in your namespace:
 
@@ -51,22 +77,27 @@ gives you the following in your namespace:
 # the most useful things from this package
 from jme.jupy_tools import conda, hit_tables
 from jme.jupy_tools.filesystem import glob_wildcards, go_to_dir
-from jme.jupy_tools.utils import LogLogger, first, read_tsv, get_seq_lens, \
+from jme.jupy_tools.utils import LogLogger, first, read_tsv, \
                                  save_fig_to_pdf
 
 # things I use often in jupyter
 from collections import Counter, defaultdict
 from itertools import islice, combinations, chain
 
-import pandas, numpy, os, sys, re, yaml
-from Bio import SeqIO
+import os, sys, re
+import pandas as pd
+import numpy as np
 from matplotlib import pyplot as plt
+
+# these will be imported if the necessary modules are present
+## biopython:
+from Bio import SeqIO
+from jme.jupy_tools.biopython import get_seq_lens
+## seaborn
 import seaborn as sns
+## pyyaml
+import yaml
 ```
-
-I dont know why I use the full names of pandas an numpy but I abbreviate
-seaborn, but I do.
-
 ## Testing
 
 I'm writing this for future me. I am testing different testing protocols with
