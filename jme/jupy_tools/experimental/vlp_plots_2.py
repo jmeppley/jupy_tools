@@ -958,9 +958,10 @@ class TreePlotterVLP():
         tree, 
         figsize=[12,12], 
         bg_styles_dict={},
+        line_styles_dict={},
         collapsed_dict={},
         scale_lines_step=1,
-        ring_width=.1,
+        ring_frac=.025,
         min_collapsed_size=2,
         support_md=None
     ):
@@ -978,7 +979,8 @@ class TreePlotterVLP():
                            collapsed_dict=collapsed_dict,
                            support_md=support_md,
                            min_collapsed_size=min_collapsed_size,
-                           bg_styles_dict=bg_styles_dict)
+                           bg_styles_dict=bg_styles_dict,
+                           line_styles_dict=line_styles_dict)
 
 
         # we drew a tree out to a radius of r
@@ -991,6 +993,8 @@ class TreePlotterVLP():
 
 
 
+        # ring width should be ring_frac of tree radius
+        ring_width = r * ring_frac
         
         for mdmd in md_md:
             if mdmd is not None:
@@ -1134,41 +1138,51 @@ def get_continuous_md(
     """
     name = data_series.name if label is None else label
     " construct Metadata object from a column of numeric data "
-    if log:
-        values = {s:data_series[s] + log_shift
-                  for s in seqs}
-        vmin, vmax = min(values.values()), max(values.values())
-        v_norm = colors.LogNorm(vmin=vmin, vmax=vmax, clip=True)
-        null_val = log_shift
-    else:
-        values = {s:data_series[s] for s in seqs}
-        vmin, vmax = min(values.values()), max(values.values())
-        v_norm = colors.Normalize(vmin=vmin, vmax=vmax, clip=True)
-        null_val = None
 
     color_thing, thing_type = \
         cluster_trees.TreeMetadata._check_color_map(color_map)
+    kwargs.setdefault('color_map', color_thing)
+    kwargs.setdefault('null_color', [1.,1.,1.,0.,])
 
-    if thing_type == "COLOR":
-        color_method = 'fixed'
-        if bar_plot is None:
-            bar_plot = True
-    else:
-        color_method = v_norm
+    # if no specifics are supploied, do some magic
+    if ('color_method' not in kwargs) and ('size_norm' not in kwargs):
+        if log:
+            values = {s:data_series[s] + log_shift
+                      for s in seqs}
+            vmin, vmax = min(values.values()), max(values.values())
+            v_norm = colors.LogNorm(vmin=vmin, vmax=vmax, clip=True)
+            null_val = log_shift
+        else:
+            values = {s:data_series[s] for s in seqs}
+            vmin, vmax = min(values.values()), max(values.values())
+            v_norm = colors.Normalize(vmin=vmin, vmax=vmax, clip=True)
+            null_val = None
 
-    if bar_plot is True:
-        size_norm = v_norm
+        if thing_type == "COLOR":
+            color_method = 'fixed'
+            if bar_plot is None:
+                bar_plot = True
+        else:
+            color_method = v_norm
+
+        if bar_plot is True:
+            size_norm = v_norm
+        else:
+            size_norm = None
+
+        for k,v in dict(
+            null_value=null_val,
+            color_method=color_method,
+            size_norm=size_norm,
+        ).items():
+            kwargs.setdefault(k, v)
     else:
-        size_norm = None
+        values = {s:data_series[s] for s in seqs}
+        kwargs.setdefault('size_norm', None)
 
     return cluster_trees.TreeMetadata(
         name,
         values,
-        null_value=null_val,
-        null_color=[1.,1.,1.,0.,],
-        color_map=color_thing,
-        color_method=color_method,
-        size_norm=size_norm,
         **kwargs,
     )
 
@@ -1347,7 +1361,8 @@ def polar_to_cart(r, th, from_degrees=False):
     return  (r * numpy.cos(th),
              r * numpy.sin(th))
 
-def get_clade_style_by_type(clade, style_dict, get_leaf_type, type_styles):
+def get_clade_style_by_type(clade, style_dict, get_leaf_type, type_styles,
+                            ignore_nas=False):
     """
     Depth-first crawl of a tree to find clades of all the same type
     PArams:
@@ -1360,15 +1375,18 @@ def get_clade_style_by_type(clade, style_dict, get_leaf_type, type_styles):
 
     # jest get the type of a leaf node
     if clade.is_terminal():
-        return [get_leaf_type(clade.name),]
+        return {get_leaf_type(clade.name),}
 
     # get types of all children
     children_with_one_type = {}
     for child in clade.clades:
-        child_types = get_clade_style_by_type(child, style_dict, get_leaf_type, type_styles)
-        node_types.update(child_types)
+        child_types = get_clade_style_by_type(child, style_dict, get_leaf_type,
+                                              type_styles, ignore_nas)
+        if ignore_nas:
+            child_types = set(t for t in child_types if pandas.notna(t))
         if len(child_types) == 1:
             children_with_one_type[child] = next(iter(child_types))
+        node_types.update(child_types)
 
     # if this node has multiple types, set the the style for any children with one type
     if len(node_types) > 1:
