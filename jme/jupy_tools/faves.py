@@ -2,6 +2,7 @@
 
 from jme.jupy_tools import conda, hit_tables
 from jme.jupy_tools.filesystem import glob_wildcards, go_to_dir
+go2dir = go_to_dir
 from jme.jupy_tools.utils import LogLogger, first, read_tsv, \
                                  save_fig_to_pdf
 
