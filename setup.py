@@ -20,7 +20,7 @@ setup(name=NAME,
       url=URL,
       license=LICENSE,
       packages=find_namespace_packages(include=['jme.*']),
-      install_requires=['pandas', 'matplotlib', 'ipykernel'],
+      install_requires=['pandas', 'matplotlib', 'ipykernel', 'polars'],
       classifiers=[
           'Development Status :: 3 - Alpha',
           'Environment :: Console',
