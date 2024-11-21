@@ -34,8 +34,13 @@ try:
 except:
     warnings.warn(" biopython import failed. Skipping")
 try:
-    # a nice plitting library, but not everyone uses it
+    # a nice plotting library, but not everyone uses it
     import seaborn as sns
 except:
     warnings.warn(" seaborn import failed. Skipping")
+try:
+    # Polars is slowly replacing pandas for me in many use cases
+    import polars as pl
+except:
+    warnings.warn(" Polars import failed. Skipping")
 
