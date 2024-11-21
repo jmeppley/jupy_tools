@@ -5,7 +5,7 @@ import numpy
 import pandas
 import subprocess
 from collections import defaultdict
-from matplotlib import pyplot as plt
+# from matplotlib import pyplot as plt  # delay this import, because it can take a little time
 
 def parse_eggnog_annotations(eggnog_annot_file, skiprows=4,
                              ogs_col='eggNOG_OGs'):
@@ -44,6 +44,7 @@ def parse_eggnog_annotations(eggnog_annot_file, skiprows=4,
 
 def get_N_colors(N, cmap_name='Dark2'):
     """ given N and a colormap, get N evenly spaced colors"""
+    from matplotlib import pyplot as plt
     try:
         color_map = plt.get_cmap(cmap_name)
         return [color_map(c) for c in numpy.linspace(0, 1, N)]
@@ -278,8 +279,10 @@ def parse_prinseq_stats(stats_file):
         names=['key', 'value'],
     )['value']
 
-def get_snake_status_table(logfile, as_dict=False):
+def get_snake_status_table(logfile, as_dict=False, slurm=False):
     rules_by_job_id = {}
+    if slurm:
+        slurm_to_jid = {}
     with open(logfile) as lines:
         last_rule = None
         last_output = None
@@ -324,6 +327,26 @@ def get_snake_status_table(logfile, as_dict=False):
             if m:
                 jobid = int(m.group(1))
                 rules_by_job_id[jobid]['status'] = 'done'
+            if slurm:
+                m = re.search(r"Submitted job (\d+) with external jobid.*[^0-9](\d+)[^0-9]", line)
+                if m:
+                    jobid = int(m.group(1))
+                    slurmid = int(m.group(2))
+                    rules_by_job_id[jobid]['slurm_id'] = slurmid
+                    slurm_to_jid[slurmid] = jobid
+                    continue
+                m = re.search(r"slurmstepd: error:\s*\S* JOB (\d+) ON \S+ (.+)", line)
+                if m:
+                    slurmid = int(m.group(1))
+                    jobid = slurm_to_jid.get(slurmid, None)
+                    if jobid is None:
+                        print(f'Warning: slurm task {slurmid} failed, but it is not connected to a rule')
+                    else:
+                        errormsg = m.group(2)
+                        rules_by_job_id[jobid]['status'] = 'error'
+                    continue
+                    
+                
     
     if as_dict:
         return rules_by_job_id
