@@ -124,7 +124,14 @@ def computeLastHitValues(blocks):
     return matchLen
 
 
-def parse_blast_m8(hit_table, format=BLAST, skiprows=0, pair_overlap_buffer=-1, **cutoffs):
+def parse_blast_m8(
+    hit_table,
+    format=BLAST,
+    skiprows=0,
+    pair_overlap_buffer=-1,
+    use_polars=False,
+    **cutoffs
+):
     """ utility for quickly loading a hit table into pandas 
     
         cutoff keys should match column names. Use negative cutoff value to accept all values.
@@ -132,6 +139,9 @@ def parse_blast_m8(hit_table, format=BLAST, skiprows=0, pair_overlap_buffer=-1, 
         if pair_overlap_buffer is set to a nonzero value, hits that overlap previous hits 
         (in the hit_table order) between a given query/hit pair are dropped. This happens
         before any other curofs are applied.
+
+        if use_polars is not False, use polars to load and filter. If
+        use_polars is set to "lazy", return the LazyFrame (ie do not collect)
     """
 
     if pair_overlap_buffer >= 0:
@@ -139,10 +149,19 @@ def parse_blast_m8(hit_table, format=BLAST, skiprows=0, pair_overlap_buffer=-1, 
         if format not in HIT_TABLE_REXPS:
             raise Exception("Overlap filtering is not supported for format: " + format)
         with remove_pair_overlaps(hit_table, buffer=pair_overlap_buffer, format=format) as new_table:
-            return parse_blast_m8(new_table, format=format, skiprows=skiprows, **cutoffs)
-    
+            return parse_blast_m8(new_table, format=format, skiprows=skiprows,
+                                  use_polars=use_polars, **cutoffs)
+
     column_names = HIT_TABLE_COLUMNS[format]
     use_cols = list(range(len(column_names)))
+
+    if use_polars:
+        return _parse_blast_m8_polars(
+            hit_table, format, skiprows, column_names, cutoffs,
+            lazy=(isinstance(use_polars, str)
+                  and (use_polars.upper() == "LAZY"))
+        )
+
     hits = \
         pandas.read_csv(
             hit_table,
@@ -153,11 +172,11 @@ def parse_blast_m8(hit_table, format=BLAST, skiprows=0, pair_overlap_buffer=-1, 
             names=column_names,
             skiprows=skiprows,
         )
-    
+
     if hits.shape[0] == 0:
         ## if there are no hits, return None
         return None
-    
+
     # format specific tweaks
     if format == LASTAL:
         hits['qsmult'] = [1 if qs == '+' else -1 
@@ -183,6 +202,89 @@ def parse_blast_m8(hit_table, format=BLAST, skiprows=0, pair_overlap_buffer=-1, 
     if len(query) > 0:
         return hits.query(query)
     return hits
+
+def _parse_blast_m8_polars(
+    hit_table,
+    format,
+    skiprows,
+    column_names,
+    cutoffs,
+    lazy=False,
+):
+    import polars as pl
+    hits = \
+        pl.scan_csv(
+            hit_table,
+            separator="\t",
+            has_header=False,
+            comment_prefix="#",
+            skip_rows=skiprows,
+            new_columns=column_names,
+        ).select(
+            *(
+                pl.col(c) for c in column_names
+            )
+        )
+
+    # format specific tweaks
+    if format == LASTAL:
+        hits = hits.with_columns(
+            pl.col('qstrand').map_elements(
+                lambda qs: 1 if qs == '+' else -1,
+                return_dtype(pl.Int8)
+            ),
+            (
+                pl.col('hstart') + pl.col('hmlen') + 1
+            ).alias('hend'),
+            (
+                pl.col('qstart') + (
+                    pl.col('qmlen') -1
+                ) * pl.col('qsmult')
+            ).alias('qend'),
+            pl.col('match_string').map_elements(
+                computeLastHitValues,
+                return_dtype=pl.UInt32,
+            ).alias('mlen'),
+            pl.col('e').map_elements(
+                lambda e: float(re.sub('E=','',str(e))),
+                return_dtype=pl.Float64,
+            ).alias('evalue')
+        )
+
+    if format in [PAF, PAF_ALL]:
+        # calculate pctid
+        hits = hits.with_columns(
+            (
+                pl.col('matches') * 100 / pl.col('mlen')
+            ).alias('pctid')
+        )
+    
+    filters = [
+        (
+            (pl.col(column) >= value)
+            if value >= 0
+            else
+            (pl.col(column) <= -1 * value)
+
+        )
+        for column, value in cutoffs.items()
+        if numpy.abs(value) > 0
+    ]
+    if len(filters) > 0:
+        hits = hits.filter(*filters)
+
+    if lazy:
+        return hits
+
+    # collect
+    hits = hits.collect()
+
+    if hits.shape[0] == 0:
+        ## if there are no hits, return None
+        return None
+
+    return hits
+
 
 @contextmanager
 def remove_pair_overlaps(hit_table, **params):
