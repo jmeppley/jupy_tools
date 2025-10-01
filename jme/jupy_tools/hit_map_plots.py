@@ -5,8 +5,8 @@ import re, numpy
 from matplotlib.pyplot import cm
 try:
     from edl import blastm8
-raise ModuleNotFoundException:
-    print("Please install jmeppley::py_metagenomics to use this module")
+except:
+    raise ModuleNotFoundException("Please install jmeppley::py_metagenomics to use this module")
 
 def remove_overlapping_hits(hits, on_hit=True, buffer=0):
     regions = []
@@ -391,12 +391,9 @@ def plot_hits_colored_pctid(
     pctid_range=[0, 100],
 ):
     """ Groups hits by query, and places above reference
-        colors hit bars via custom callable:
-            takes hit as argumetns and returns
-                hit: edl.blastm8.Hit object
-                pos: y position
+        colors hit bars pixel-by-pixel based on ANI of the alignment
         hits_dict: map from query_id to list of hit objects
-        norm_read_color: False (default): same color scale for all reads. True: max is read end, not longest read.
+        reference_sequence: nucl sequence of the reference (usually a contig)
     """
     if plot_range is None:
         x0 = 0
@@ -438,16 +435,11 @@ def plot_hits_colored_pctid(
             color="grey",
         )
 
-        # scan hits for hit with read seq
-        for hit in hits:
-            hit_seq = hit.line.split("\t")[9]
-            if hit_seq != "*":
-                read_seq = hit_seq
-
         read_seq = None
         for hit in hits:
             hit_seq = hit.line.split("\t")[9]
             if read_seq is None or len(hit_seq) > len(read_seq):
+                # save in case the next hit has no seq
                 read_seq = hit_seq
             elif hit_seq == "*":
                 hit_seq = read_seq
