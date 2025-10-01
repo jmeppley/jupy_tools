@@ -144,7 +144,7 @@ def glob_wildcards(
     wildcard_pattern = TEMPLATE_REXP.sub(wc_repl, _hide_dots(template))
     if debug:
         print(f"Wildcard regexp: '{wildcard_pattern}'")
-    wildcard_rexp = re.compile(wildcard_pattern)
+    wildcard_rexp = re.compile(wildcard_pattern + "$")
 
     # create named tuple class for returned data
     if return_type in {TUPL, SNEK}:
