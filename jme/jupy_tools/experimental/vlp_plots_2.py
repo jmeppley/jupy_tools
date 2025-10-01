@@ -728,6 +728,9 @@ class TreePlotterVLP():
                   gene_method=GM_TOP,
                   length_hist=False,
                   gene_footnotes=None,
+                  tree_kwargs={},
+                  draw_legends=True,
+                  debug=False,
                   **kwargs):
         """
         Given a phylogenetic tree and genome metadata, make a synteny tree plot (using cluster_trees.master_plot)
@@ -773,8 +776,21 @@ class TreePlotterVLP():
                 # set clade heights and check that nodes do not overlap
                 used_nodes = set()
                 biggest_clade = max(len(c.get_terminals()) for c in collapsed_nodes)
-                if "collapsed_clade_heights" in kwargs:
-                    collapsed_node_heights = kwargs.pop("collapsed_clade_heights")
+                if (
+                    "collapsed_clade_heights" in kwargs or
+                    "collapsed_clade_heights" in tree_kwargs
+                ):
+                    if (
+                        "collapsed_clade_heights" in kwargs and
+                        "collapsed_clade_heights" in tree_kwargs
+                    ):
+                        print("WARNING: using clade heights form kwargs, not"
+                              " tree_kwargs!!")
+                    if "collapsed_clade_heights" in kwargs:
+                        collapsed_node_heights = kwargs.pop("collapsed_clade_heights")
+                        tree_kwargs['collapsed_clade_heights'] = collapsed_node_heights
+                    else:
+                        collapsed_node_heights = tree_kwargs.pop("collapsed_clade_heights")
                 else:
                     collapsed_node_heights = {}
                     for c in collapsed_nodes:
@@ -846,109 +862,127 @@ class TreePlotterVLP():
                                        md_md,
                                        collapsed_clade_labels=collapsed_nodes,
                                        draw_genes=draw_genes,
-                                      tree_kwargs=dict(
-                                          collapsed_clade_heights=collapsed_node_heights),
+                                       tree_kwargs=tree_kwargs,
                                        **kwargs,
                                       )
 
         # make some legends (this will fail for draw_genes=False)
-        if draw_genes == False:
-            print("WARNING: I don't know how to make legnds when draw_genes is False!!")
-            return fig
+        if draw_genes == False or draw_genes is None:
+            if draw_legends:
+                print("WARNING: I don't know how to make legnds when draw_genes is False!!")
+            return fig, md_md
         
-        # figure out where the plots are
-        x, y, w, h = fig.axes[0].figbox.bounds
-        x1, y1, w1, h1 = fig.axes[1].figbox.bounds
-        x2, y2, w2, h2 = (
-            fig.axes[2].figbox.bounds
-            if 'clade_ratio_dicts' not in kwargs
-            else
-            fig.axes[4].figbox.bounds
-        )
-        top = y2 + h2
+        if not draw_legends:
+            return fig, md_md
+        else:
+            # figure out where the plots are
+            try:
+                _ = fig.axes[0].bbox._bbox.get_points()
+                def get_bounds(ax):
+                    x1, x2 = ax.bbox._bbox.get_points()
+                    return (*x1, x2[0] - x1[0], x2[1] - x1[1])
+            except AttributeError:
+                get_bounds = lambda ax: ax.figbox.bounds
 
-        # separate categorical and continuous MDs
-        cat_mds = []
-        cont_mds = []
+            x, y, w, h = get_bounds(fig.axes[0])
+            x1, y1, w1, h1 = get_bounds(fig.axes[1])
+            x2, y2, w2, h2 = (
+                get_bounds(fig.axes[2])
+                if 'clade_ratio_dicts' not in kwargs
+                else
+                get_bounds(fig.axes[4])
+            )
+            top = y2 + h2
 
-        for md in md_md:
-            if md is None:
-                continue
-            label = md.label
-            if md.color_method == 'cat':
-                vcs = list(md.get_category_colors(tree_nodes))
-                cat_mds.append((label, vcs))
-            else:
-                cont_mds.append((label, md))
+            # separate categorical and continuous MDs
+            cat_mds = []
+            cont_mds = []
 
-        N_rows = len(cont_mds) + 2
-        cont_ax_step = 1 / N_rows
-        cont_ax_h = cont_ax_step / 5
-
-        lc_count = 0
-        for label, md in cont_mds:
-            cax = fig.add_axes([x/2, top, w * .4, h2 * cont_ax_h], )
-            cax.patch.set_alpha(0)
-            #_ = cax.set_title(label)
-            _ = cax.yaxis.set_label_position('right')
-            _ = cax.set_ylabel(label, rotation=0, va='top', ha='left')
-            cb = fig.colorbar(ScalarMappable(norm=md.color_method, cmap=md.color_map,),
-                             cax=cax,
-                             orientation='horizontal')
-
-            # set cbar limit to just values in this plot
-            minv, maxv = get_min_max(md.data_dict[s]
-                                     for s in tree_seqs
-                                     if s in md.data_dict)
-            _ = cax.set_xlim(minv, maxv)
-            # erase the outline of the full (not clipped) colorbar
-            cb.outline.set_visible(False)
-
-            top -= h2 * cont_ax_step
-            cax.set_clip_on(True)
-
-        lax = None
-        lax_x = x/2
-        lax_w = w * .4 / 3
-        top -= h2 * cont_ax_step
-        for label, values_colors in sorted(cat_mds, key=lambda lvc:
-                                           len(lvc[1]), reverse=True):
-            if len(values_colors) == 1:
-                value, color = next(iter(values_colors))
-                if value in {None, "None", md.null_value}:
+            for md in md_md:
+                if md is None:
                     continue
-            lax = fig.add_axes([lax_x, top, lax_w, h2 * cont_ax_step], )
-            lax.patch.set_alpha(0)
-            for spine in lax.spines.values():
-                spine.set_visible(False)
-            lax.set_yticks([])
-            lax.set_xticks([])
-            add_cat_md_legend(
-                       label,
-                       values_colors,
-                       lax,
-                       bbox_to_anchor=None,
-                       loc='upper center')
-            lax_x += lax_w
+                label = md.label
+                try:
+                    # If draw_legends is a container, on draw things in it
+                    if label not in draw_legends:
+                        continue
+                except TypeError:
+                    # draw_legends was just a boolean
+                    pass
+                if md.color_method == 'cat':
+                    vcs = list(md.get_category_colors(tree_nodes))
+                    cat_mds.append((label, vcs))
+                else:
+                    cont_mds.append((label, md))
 
-        if length_hist:
-            # make an axis in the upper right
-            lax = fig.add_axes([x1, y2 + (h2/2), w1, h2/2])
-            _ = lax.yaxis.tick_right()
-            _ = lax.set_title('Genome Lengths')
-            if isinstance(length_hist, dict):
-                # interperet as a dict of length sets to plot multiple
-                # histograms from
-                hist_range = get_min_max(chain(*length_hist.values()))
-                for label, seq_lens in length_hist.items():
-                    h = lax.hist(seq_lens, bins=50, log=True, label=label,
-                                 alpha=.66, range=hist_range,
-                                 histtype='step')
-                _ =  lax.legend()
-            else:
-                # other wise just make a hist of tree seq lengths
-                tree_seq_lens = [self.seq_lens[s] for s in tree_seqs]
-                h = lax.hist(tree_seq_lens, bins=25, log=True)
+            N_rows = len(cont_mds) + 2
+            cont_ax_step = 1 / N_rows
+            cont_ax_h = cont_ax_step / 5
+
+            lc_count = 0
+            for label, md in cont_mds:
+                cax = fig.add_axes([x/2, top, w * .4, h2 * cont_ax_h], )
+                cax.patch.set_alpha(0)
+                #_ = cax.set_title(label)
+                _ = cax.yaxis.set_label_position('right')
+                _ = cax.set_ylabel(label, rotation=0, va='top', ha='left')
+                cb = fig.colorbar(ScalarMappable(norm=md.color_method, cmap=md.color_map,),
+                                 cax=cax,
+                                 orientation='horizontal')
+
+                # set cbar limit to just values in this plot
+                minv, maxv = get_min_max(md.data_dict[s]
+                                         for s in tree_seqs
+                                         if s in md.data_dict)
+                _ = cax.set_xlim(minv, maxv)
+                # erase the outline of the full (not clipped) colorbar
+                cb.outline.set_visible(False)
+
+                top -= h2 * cont_ax_step
+                cax.set_clip_on(True)
+
+            lax = None
+            lax_x = x/2
+            lax_w = w * .4 / 3
+            top -= h2 * cont_ax_step
+            for label, values_colors in sorted(cat_mds, key=lambda lvc:
+                                               len(lvc[1]), reverse=True):
+                if len(values_colors) == 1:
+                    value, color = next(iter(values_colors))
+                    if value in {None, "None", md.null_value}:
+                        continue
+                lax = fig.add_axes([lax_x, top, lax_w, h2 * cont_ax_step], )
+                lax.patch.set_alpha(0)
+                for spine in lax.spines.values():
+                    spine.set_visible(False)
+                lax.set_yticks([])
+                lax.set_xticks([])
+                add_cat_md_legend(
+                           label,
+                           values_colors,
+                           lax,
+                           bbox_to_anchor=None,
+                           loc='upper center')
+                lax_x += lax_w
+
+            if length_hist:
+                # make an axis in the upper right
+                lax = fig.add_axes([x1, y2 + (h2/2), w1, h2/2])
+                _ = lax.yaxis.tick_right()
+                _ = lax.set_title('Genome Lengths')
+                if isinstance(length_hist, dict):
+                    # interperet as a dict of length sets to plot multiple
+                    # histograms from
+                    hist_range = get_min_max(chain(*length_hist.values()))
+                    for label, seq_lens in length_hist.items():
+                        h = lax.hist(seq_lens, bins=50, log=True, label=label,
+                                     alpha=.66, range=hist_range,
+                                     histtype='step')
+                    _ =  lax.legend()
+                else:
+                    # other wise just make a hist of tree seq lengths
+                    tree_seq_lens = [self.seq_lens[s] for s in tree_seqs]
+                    h = lax.hist(tree_seq_lens, bins=25, log=True)
 
         return fig
 
@@ -1912,12 +1946,17 @@ def draw_md_ring(ax, ring_order, mdmd, radius=3, width=.1, center=180, leaf_arc=
     ax_patches = []
     start = center - leaf_arc * (N/2)
     for leaf in ring_order:
-        color = mdmd.get_item_color(leaf.name)
+        color = mdmd.get_item_color(leaf)
         if mdmd.size_norm is not None:
             leaf_size = mdmd.get_item_size(leaf) * width
         else:
             leaf_size = width
         end = start + leaf_arc
+
+        if True:
+            name = (leaf.name if leaf.is_terminal() else
+            f"{leaf.count_terminals()} leaves")
+
         ax_patches.append(patches.Wedge(offset,
                                    r=radius,
                                    theta1=start,

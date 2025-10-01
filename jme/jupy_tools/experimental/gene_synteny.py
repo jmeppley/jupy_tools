@@ -429,7 +429,13 @@ def align_gene_locs(my_genes, anchor_on_annot=None,
                         shifted_genome_genes.loc[gene, ['start', 'end']].values \
                             + genome_len
         if shifted_genes is not None:
-            shifted_genes = shifted_genes.append(shifted_genome_genes)
+            try:
+                shifted_genes = pandas.concat(
+                    [shifted_genes, shifted_genome_genes],
+                    axis=0
+                )
+            except:
+                shifted_genes = shifted_genes.append(shifted_genome_genes)
         else:
             shifted_genes = shifted_genome_genes
         shifted_genomes.add(genome)
@@ -465,7 +471,13 @@ def align_gene_locs(my_genes, anchor_on_annot=None,
             genome_genes \
                     .eval(f'start = start + {shift}') \
                     .eval(f'end = end + {shift}')
-        shifted_genes = shifted_genes.append(shifted_genome_genes)
+        try:
+            shifted_genes = pandas.concat(
+                [shifted_genes, shifted_genome_genes],
+                axis=0
+            )
+        except:
+            shifted_genes = shifted_genes.append(shifted_genome_genes)
         #shifted_genomes.add(genome)
         
     return shifted_genes

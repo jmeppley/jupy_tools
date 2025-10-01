@@ -520,7 +520,10 @@ class TreeMetadata():
             unique_values = set(self.data_dict.get(s, self.null_value)
                                 for s in seqs)
         else:
-            unique_values = self.color_dict.keys()
+            if self.color_dict is not None:
+                unique_values = self.color_dict.keys()
+            else:
+                unique_values = set(self.data_dict.keys())
 
         # generate tuples of values paired with the corrsponding color
         for value in unique_values:
