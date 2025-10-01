@@ -375,7 +375,95 @@ def generate_nonoverlapping_lines(hit_file, format=BLAST_PLUS, buffer=0):
                 query_regions.append(tuple(sorted((qstart, qend))))
                 yield line
 
+def _check_columns(frame, col, is_lazy=False):
+    if is_lazy:
+        return col in frame.collect_schema()
+    return col in frame.columns
+
+def agg_hit_polars_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False):
+    import polars as pl
+    
+    if isinstance(non_ovl_hits, pl.LazyFrame):
+        lazy = True
+    elif isinstance(non_ovl_hits, pl.DataFrame):
+        lazy = False
+    else:
+        raise Exception("I only know polars and panads dataframes. I can't handle type: " + 
+                        str(type(non_ovl_hits)))
+
+    columns = set(non_ovl_hits.collect_schema() if lazy else non_ovl_hits.columns)
+    
+    if 'matches' not in columns:
+        non_ovl_hits = non_ovl_hits.with_columns(
+            ((pl.col('pctid') * pl.col('mlen')) / 100).alias('matches')
+        )
+
+    # just summing the first N fragments is not yet supported for polars
+    if max_hit_fragments > 0:
+        raise Exception("Limiting hit fragments in aggregation with max_hit_fragments is not yet supported.")
+
+    # add up the match counts and match lengths
+    agg_col_exprs = [
+        pl.col('matches').sum(),
+        pl.col('mlen').sum()
+    ]
+
+    # keep one (the first) if either query or hit length is present
+    for col in ['qlen', 'hlen']:
+        if col in columns:
+            agg_col_exprs.append(
+                pl.col(col).first()
+            )
+
+    # get lengths and extents if we can and if asked
+    updated_column_exprs = []
+    for pref in ['q','h']:
+        # do for both query and hit start/end pairs
+        scol, ecol = [pref+col for col in ['start','end']]
+
+        # only if the columns exist
+        if scol in columns and ecol in columns:
+
+            # force start/end pairs to be sorted (simplifies next 2 things)
+            updated_column_exprs.extend([
+                pl.when(pl.col(scol) > pl.col(ecol)).then(pl.col(ecol)).otherwise(pl.col(scol)).alias(scol),
+                pl.when(pl.col(scol) > pl.col(ecol)).then(pl.col(scol)).otherwise(pl.col(ecol)).alias(ecol),
+            ])
+
+            # get max extent for all hits if requested
+            if keep_extent:
+                # now the start is the smallest start and the end is the biggest end
+                agg_col_exprs.extend([
+                    pl.col(scol).min(),
+                    pl.col(ecol).max()
+                ])
+
+            # calculate query and hit specific alignment lengths
+            agg_col_exprs.append(
+                (pl.col(ecol) + 1 - pl.col(scol)).sum().alias(f"{pref}mlen")
+            )
+
+    post_agg_cols = [
+        (pl.col('matches') * 100 / pl.col('mlen')).alias('pctid')
+    ]
+    if 'qlen' in columns and 'hlen' in columns:
+        post_agg_cols.append(
+            (pl.col('matches') * 200 / (pl.col('hlen') + pl.col('qlen'))).alias('mfrac')
+        )
+    
+    agg_hits = non_ovl_hits \
+        .with_columns(updated_column_exprs) \
+        .group_by(['query','hit']) \
+        .agg(agg_col_exprs) \
+        .with_columns(post_agg_cols)
+
+    return agg_hits
+    
 def agg_hit_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False):
+    if not isinstance(non_ovl_hits, pandas.DataFrame):
+        # try polars
+        return agg_hit_polars_df(non_ovl_hits, max_hit_fragments, keep_extent)
+        
     # aggregate all hits by hit/query pair
     if 'matches' not in non_ovl_hits.columns:
         non_ovl_hits = non_ovl_hits.eval('matches = pctid * mlen / 100')
