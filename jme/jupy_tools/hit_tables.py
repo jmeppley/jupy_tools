@@ -157,9 +157,10 @@ def parse_blast_m8(
 
     if use_polars:
         return _parse_blast_m8_polars(
-            hit_table, format, skiprows, column_names, cutoffs,
+            hit_table, format, skiprows, column_names,
             lazy=(isinstance(use_polars, str)
-                  and (use_polars.upper() == "LAZY"))
+                  and (use_polars.upper() == "LAZY")),
+            **cutoffs,
         )
 
     hits = \
@@ -208,10 +209,13 @@ def _parse_blast_m8_polars(
     format,
     skiprows,
     column_names,
-    cutoffs,
     lazy=False,
+    scan_csv_args=None,
+    **cutoffs,
 ):
     import polars as pl
+    if scan_csv_args is None:
+        scan_csv_args = {} 
     hits = \
         pl.scan_csv(
             hit_table,
@@ -220,6 +224,7 @@ def _parse_blast_m8_polars(
             comment_prefix="#",
             skip_rows=skiprows,
             new_columns=column_names,
+            **scan_csv_args,
         ).select(
             *(
                 pl.col(c) for c in column_names
@@ -375,7 +380,7 @@ def agg_hit_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False):
     if 'matches' not in non_ovl_hits.columns:
         non_ovl_hits = non_ovl_hits.eval('matches = pctid * mlen / 100')
         
-    # allow for the optin to just sum the first N fragments
+    # allow for the option to just sum the first N fragments
     if max_hit_fragments > 0:
         def sum_first_N(S):
             return sum(islice(S, max_hit_fragments))
@@ -427,7 +432,87 @@ def agg_hit_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False):
         agg_hits = agg_hits.eval('mfrac=200 * matches / (hlen + qlen)')
         
     return agg_hits    
-                
+
+
+def agg_hit_df_polars(non_ovl_hits, max_hit_fragments=0, keep_extent=False):
+    # aggregate all hits by hit/query pair
+    import polars as pl
+
+    columns = set(
+        non_ovl_hits.collect_schema().names()
+        if isinstance(non_ovl_hits, pl.LazyFrame)
+        else non_ovl_hits.schema.names()
+    )
+    if 'matches' not in columns:
+        non_ovl_hits = non_ovl_hits.with_columns(
+                    (pl.col('pctid') * pl.col('mlen') /
+                     100).alias('matches')
+                )
+
+    # allow for the option to just sum the first N fragments
+    if max_hit_fragments > 0:
+        non_ovl_hits = non_ovl_hits.sort(
+            pl.col('matches'), descending=True
+        ).group_by(
+            pl.col('query'), pl.col('hit')     # for each query/hit pair
+        ).head(
+            max_hit_fragments   # take the first N hits
+        )
+
+    # addup match ids and match lengths
+    agg_args = [
+        pl.col('matches').sum(),
+        pl.col('mlen').sum(),
+    ]
+
+    # also save qlen and hlen if present
+    for col in ['qlen', 'hlen']:
+        if col in columns:
+            agg_args.append(pl.col(col).first())
+    
+    
+    # get lengths and extents if we can and if asked                                                
+    for pref in ['q','h']:
+        # do for both query and hit start/end pairs
+        scol, ecol = [pref+col for col in ['start','end']]                                          
+        
+        # only if the columns exist
+        if scol in columns and ecol in columns:                           
+            agg_args.append(
+                ((pl.col(ecol) - pl.col(scol)).abs() + 1).alias(f"{pref}mlen").sum()
+            )
+
+            # get max extent for all hits if requested                                              
+            if keep_extent:
+                # now the start is the smallest start and the end is the biggest end                
+                agg_args.extend([
+                    pl.min_horizontal(pl.col(scol), pl.col(ecol)).min(),
+                    pl.max_horizontal(pl.col(scol), pl.col(ecol)).max(),
+                ])                                                         
+    
+    agg_hits = non_ovl_hits.group_by(
+        pl.col('query'), 
+        pl.col('hit'),
+    ).agg(
+        *agg_args
+    ).with_columns(
+        (pl.col('matches') * 100 / pl.col('mlen')).alias('pctid')
+    )
+    
+
+    # calculate mfrac if we can
+    if ('qlen' in columns) and ('hlen' in columns):
+        agg_hits = agg_hits.with_columns(
+            (
+                pl.col('matches') * 200 / (
+                    pl.col('hlen') + pl.col('qlen')
+                )
+            ).alias('mfrac')            
+        )
+
+    return agg_hits
+
+
 def agg_hit_table(hit_table, ovl_buffer=0, max_hit_fragments=0,
                   keep_extent=False, **parse_args):
     """
@@ -443,4 +528,42 @@ def agg_hit_table(hit_table, ovl_buffer=0, max_hit_fragments=0,
     if non_ovl_hits is None:
         return None
 
+    if ('use_polars' in parse_args) and (parse_args['use_polars']):
+        return agg_hit_df_polars(non_ovl_hits, max_hit_fragments, keep_extent)
+
     return agg_hit_df(non_ovl_hits, max_hit_fragments, keep_extent)
+
+## SAM flags
+bit_names = [
+    'paired', 'mapped in pair', 'unmapped', 'mate unmapped', 
+    'read rev strand', 'mate rev strand', 
+    'first in pair', 'second in pair', 'not primary alig', 'fails checks', 
+    'duplicate', 'supplementary',
+]
+
+def decode_sam_flags(flag):
+    # hack using the binary representation of the flag integer
+    # I couldn't get it to pad zeros properly, so I'm adding a high bit that I cut off at the end
+    bits = list(reversed(f"{bin(int(flag) + 4096)}"))[:-3]
+    assert len(bits) == len(bit_names)
+    return {
+        name: (bit == "1")
+        for name, bit 
+        in zip(bit_names, bits)
+    }
+
+def is_sam_flag_primary_hit(flag):
+    flag_bits = decode_sam_flags(flag)
+    return (
+        (not flag_bits["unmapped"])
+        and
+        (not (
+            flag_bits["supplementary"]
+            or
+            flag_bits["not primary alig"]
+        ))
+    )
+
+def is_sam_flag_first_in_pair(flag):
+    return decode_sam_flags(flag)['first in pair']
+

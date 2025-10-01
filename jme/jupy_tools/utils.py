@@ -7,6 +7,38 @@ import subprocess
 from collections import defaultdict
 from matplotlib import pyplot as plt
 
+def parse_eggnog_annotations_polars(
+    eggnog_annot_file, ogs_col='eggNOG_OGs', first_column='query', lazy=True,
+):
+    """
+    Parse emapprt annotation results into a Polars DataFrame
+    """
+    import polars as pl
+
+    eggnog_lf = pl.scan_csv(
+        eggnog_annot_file, 
+        separator='\t', 
+        comment_prefix="##", 
+    ).rename(
+        {'#query': 'query'}
+    )
+
+    if ogs_col is not None:
+        # parse the OGs column, pulling out the root OG and the most tax-specific OG
+        eggnog_lf = eggnog_lf.with_columns(
+            pl.col(ogs_col).str.extract(
+                r"^([^@,|]+)@\d+\|root,", 1
+            ).alias('root_og'),
+            pl.col(ogs_col).str.extract(
+                r"([^@,|]+)@\d+\|[^@|,]+$", 1
+            ).alias('tax_og'),
+        )
+    
+    if lazy:
+        return eggnog_lf
+    return eggnog_lf.collect()
+
+    
 def parse_eggnog_annotations(eggnog_annot_file, skiprows=4,
                              ogs_col='eggNOG_OGs'):
     """
