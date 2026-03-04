@@ -26,12 +26,24 @@ def parse_eggnog_annotations_polars(
     if ogs_col is not None:
         # parse the OGs column, pulling out the root OG and the most tax-specific OG
         eggnog_lf = eggnog_lf.with_columns(
-            pl.col(ogs_col).str.extract(
-                r"^([^@,|]+)@\d+\|root,", 1
+            pl.col(ogs_col).str.extract_groups(
+                r"^(?<root_og>[^@,|]+)@\d+\|(?<domain>\w+)"
             ).alias('root_og'),
             pl.col(ogs_col).str.extract(
                 r"([^@,|]+)@\d+\|[^@|,]+$", 1
             ).alias('tax_og'),
+        ).unnest(
+            'root_og'
+        ).with_columns(
+            pl.when(
+                pl.col('domain') == 'root'
+            ).then(
+                pl.col(ogs_col).str.extract(
+                    r".+root,[^@,|]+@\d+\|([A-Z]\w+)", 1
+                )
+            ).otherwise(
+                pl.col('domain')
+            ).alias('domain')
         )
     
     if lazy:
