@@ -332,12 +332,12 @@ def get_snake_status_table(logfile, as_dict=False, slurm=False):
         last_output = None
         last_error = None
         for line in lines:
-            m = re.search('^(?:checkpoint|(?:local)?rule)\s+(.+):\s*$', line.strip())
+            m = re.search(r'^(?:checkpoint|(?:local)?rule)\s+(.+):\s*$', line.strip())
             if m:
                 last_rule = m.group(1)
                 last_error = None
                 continue
-            m = re.search('Error\s+in\s+(?:checkpoint|rule)\s+(.+):\s*$', line.strip())
+            m = re.search(r'Error\s+in\s+(?:checkpoint|rule)\s+(.+):\s*$', line.strip())
             if m:
                 last_rule = None
                 last_error = m.group(1)
