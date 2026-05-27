@@ -176,7 +176,7 @@ def glob_wildcards(
             yield wc_list
 
 def _hide_dots(path):
-    return re.sub(r"\.", ".", path)
+    return re.sub(r"\.", r"\.", path)
 
 
 from numpy import log, power, abs
