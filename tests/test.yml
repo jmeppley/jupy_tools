@@ -6,4 +6,6 @@ dependencies:
  - pandas
  - matplotlib
  - py-metagenomics
- - nose
+ - pip
+ - pip:
+    - nose2

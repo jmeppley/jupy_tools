@@ -160,7 +160,7 @@ def save_fig_to_pdf(fig, fname, **kwargs):
 
     pdf.close()
 
-def _print(msg, format_variables):
+def _print(msg, *format_variables):
     if format_variables is None:
         print(msg)
     elif isinstance(format_variables, tuple):
@@ -236,12 +236,12 @@ class LogLogger:
             return True
         return False
 
-    def log(self, message, format_variables=None):
+    def log(self, message, *format_variables):
         """
         Reduce the frequency of log messages as the count gets higher
         """
         if self.check_pos():
-            self.__print__(message, format_variables)
+            self.__print__(message, *format_variables)
 
 
 def get_best_fit(xd, yd, force_intercept=False, force_slope=False):
