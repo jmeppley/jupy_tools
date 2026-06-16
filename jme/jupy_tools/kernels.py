@@ -33,7 +33,7 @@ def get_cpu_mem_posns_in_top():
 
     # this only works for right justified (numeric?) fields
     return {key:re.search(f"\s+{key}", top_header).span() for key in TOP_KEYS}
-  
+
 
 def get_top_kernels_from_top(user, sort_key, N):
     """ returns the first N top entries sorted by sort_key """
@@ -49,7 +49,8 @@ class KernelFinder():
                  jupyter_url,
                  jupyter_token,
                  notebook_root=os.environ['HOME'],
-                 username=os.getlogin()):
+                 username=os.environ['USER'],
+                ):
         self.url = jupyter_url
         self.token = jupyter_token
         self.user = username
@@ -66,7 +67,7 @@ class KernelFinder():
          * RAM usage (%)
          * RAM usage (#)
          * CPU usage (%)
-        
+
         Output can be filtered or sorted as in det_top_N_kernels
         """
         some_list = [1,2,3,4]
@@ -92,7 +93,7 @@ class KernelFinder():
         df[CPU_KEY] = [float(c) for c in df[CPU_KEY]]
         df[MEM_KEY] = [float(m) for m in df[MEM_KEY]]
         return df
-    
+
     def _getmtime(self, notebook_path):
         try:
             return pandas.to_datetime(
@@ -102,14 +103,14 @@ class KernelFinder():
             )
         except FileNotFoundError:
             return None
-        
+
     def get_top_N_kernels(self, N=-1, key=MEM_KEY, use_cache=True):
         """
         Get the top N kernels by CPU or MEM (defaults to all (N = -1))
-        
+
         if use_cache is False, re-query the jupyter server for the latest list of kernels
         """        
-        
+
         session_by_kernel = self.get_sessions_by_kernel(use_cache)
 
         # !top -b -n 1 -u jmeppley -o {key} -c -w 333 | grep -m {N} json$
@@ -139,7 +140,7 @@ class KernelFinder():
                 for s in response.json()
             }
         return self.sessions_by_kernel
-    
+
     def get_col_spans(self, use_cache=True):
         if use_cache is False:
             self.col_spans = get_cpu_mem_posns_in_top()
@@ -147,9 +148,8 @@ class KernelFinder():
 
     def parse_vals_from_top_line(self, top_line, use_cache=True):
         col_spans = self.get_col_spans(use_cache)
-        
+
         return {
             key:top_line[span[0]:span[1]].strip()
             for key, span in col_spans.items()
         } 
-
