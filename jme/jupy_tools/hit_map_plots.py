@@ -340,6 +340,15 @@ def get_diffs(cigar_string, query_seq, hit_start, hit_end, hit_seq, debug=False)
 
 
 def get_hit_pctids(hit_start, hit_end, diffs, N):
+    """ Split a hit into N equal regions and yield the % identity of each
+
+        hit_start, hit_end: 1-based, inclusive hit positions
+        diffs: differences from get_diffs() in order (0-based hit position is
+               the 3rd element)
+        N: number of regions (eg pixels). If N is not a whole number, the last
+           region is shorter than the others, and its identity is calculated
+           over its actual length
+    """
     diff_iter = iter(diffs)
     try:
         next_diff = next(diff_iter)
@@ -347,15 +356,23 @@ def get_hit_pctids(hit_start, hit_end, diffs, N):
         next_diff = None
     mlen = hit_end + 1 - hit_start
     region_length = mlen / N  # NOT a integer!
-    for hpos in numpy.arange(hit_start - 1, hit_end, region_length):
+    # number of regions (allowing for float rounding in N)
+    region_count = max(1, int(numpy.ceil(N - 1e-9)))
+    first_pos = hit_start - 1  # 0-based
+    last_pos = hit_end         # 0-based, exclusive
+    for i in range(region_count):
+        region_start = first_pos + i * region_length
+        region_end = min(region_start + region_length, last_pos)
+        # count the diffs in this region
         diff_count = 0
-        while next_diff is not None and next_diff[2] < hpos:
+        while next_diff is not None and next_diff[2] < region_end:
             diff_count += 1
             try:
                 next_diff = next(diff_iter)
             except StopIteration:
                 next_diff = None
-        yield 100 * (region_length - diff_count) / region_length
+        size = region_end - region_start
+        yield 100 * (size - diff_count) / size
 
 
 def get_dot_count(span, axrange, ax, axis="x"):

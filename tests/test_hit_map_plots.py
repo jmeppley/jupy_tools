@@ -223,16 +223,57 @@ def test_get_hit_pctids_counts_all_diffs():
     assert min(pctids) < 100
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "get_hit_pctids counts the diffs before the start of each region, so "
-    "each diff is reported one region late (and the last region's diffs "
-    "are never counted)"))
 def test_get_hit_pctids_positions():
     # 1 diff in region 0 (positions 0-9), 2 in region 1 (10-19), 1 in the last
     diffs = [(0, 'A', 5, 'C'), (0, 'A', 15, 'C'), (0, 'A', 16, 'C'),
              (0, 'A', 95, 'C')]
     pctids = list(hit_map_plots.get_hit_pctids(1, 100, diffs, 10))
     assert pctids == [90, 80] + [100] * 7 + [90]
+
+
+def test_get_hit_pctids_hit_offset():
+    """ regions start at the hit start (diff positions are 0-based) """
+    # hit covers 0-based positions 500-599, one diff at the start of each half
+    diffs = [(0, 'A', 500, 'C'), (0, 'A', 550, 'C')]
+    pctids = list(hit_map_plots.get_hit_pctids(501, 600, diffs, 2))
+    assert pctids == [98, 98]
+    # a diff on the last base of the first half
+    pctids = list(hit_map_plots.get_hit_pctids(501, 600, [(0, 'A', 549, 'C')], 2))
+    assert pctids == [98, 100]
+
+
+def test_get_hit_pctids_fractional_regions():
+    """ with a fractional N, the last region is shorter (and scored as such) """
+    # 100bp in 2.5 regions: 0-40, 40-80, 80-100
+    diffs = [(0, 'A', 10, 'C'), (0, 'A', 90, 'C')]
+    pctids = list(hit_map_plots.get_hit_pctids(1, 100, diffs, 2.5))
+    assert pctids == [pytest.approx(97.5), 100, pytest.approx(95)]
+
+
+@pytest.mark.parametrize("N", [3, 3.0, 300 / 100, 0.1 * 3 * 10, 7])
+def test_get_hit_pctids_region_count(N):
+    """ whole numbers give exactly N regions, even with float rounding """
+    pctids = list(hit_map_plots.get_hit_pctids(1, 100, [], N))
+    assert len(pctids) == round(N)
+    assert pctids == [pytest.approx(100)] * round(N)
+
+
+def test_get_hit_pctids_less_than_one_region():
+    pctids = list(hit_map_plots.get_hit_pctids(1, 100, [(0, 'A', 4, 'C')], 0.5))
+    assert pctids == [99]
+
+
+def test_get_hit_pctids_from_cigar():
+    """ diffs from get_diffs line up with the regions """
+    reference = "A" * 40
+    # 20bp hit at reference positions 11-30, mismatch at the 5th base
+    query = "A" * 4 + "C" + "A" * 15
+    diffs = hit_map_plots.get_diffs("20M", query, 11, 30, reference)
+    assert list(hit_map_plots.get_hit_pctids(11, 30, diffs, 2)) == [90, 100]
+    # an insertion (in the second half) counts as a diff, too
+    query = "A" * 15 + "G" + "A" * 5
+    diffs = hit_map_plots.get_diffs("15M1I5M", query, 11, 30, reference)
+    assert list(hit_map_plots.get_hit_pctids(11, 30, diffs, 2)) == [100, 90]
 
 
 ###
