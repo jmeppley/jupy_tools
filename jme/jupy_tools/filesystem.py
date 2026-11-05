@@ -327,19 +327,13 @@ def get_user_lookup_table():
     """ returns series mapping user id to user name """
     return pandas.read_table('/etc/passwd', sep=':', names=['user','code','id','group','home','shell'], index_col=2)['user']
 
-def go_to_dir(dirname):
+def go_to_dir(dirname, quiet=False):
     """
     Creates `dirname` if it doesnt exist, then navigates to it with %cd magic
     """
     import os
     os.makedirs(dirname, exist_ok=True)
-
-    from IPython import get_ipython
-    ipython = get_ipython()
-    try:
-        ipython.run_line_magic('cd', dirname)
-    except AttributeError:
-        ipython.magic(f'%cd {dirname}')
-
+    os.chdir(dirname)
+    if not quiet:
+        print(dirname)
     return dirname
-

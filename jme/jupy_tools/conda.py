@@ -57,22 +57,24 @@ def get_conda_bin_path():
     # is conda in the path?
     try:
         conda_path = subprocess.check_output(['which', 'conda'], ).rstrip()
-    except CalledProcessError:
+    except subprocess.CalledProcessError:
         # conda not installed in this shell
         return None
     
-    try:
+    if isinstance(conda_path, bytes):
         # subprocess usually returns a byte string, decode it
         conda_path = conda_path.decode()
-    except AttributeError:
-        # It was already a str
-        pass
     
     # we want the bin dir, not the full path to the conda executable
     return os.path.dirname(conda_path)
 
 def discover_named_envs():
-    env_bytes = subprocess.check_output(['conda', 'info', '--envs'])
+    try:
+        env_bytes = subprocess.check_output(['conda', 'info', '--envs'])
+    except FileNotFoundError:
+        # if there is no conda to the environment, move on
+        return
+    
     if isinstance(env_bytes, bytes):
         env_bytes = env_bytes.decode()
     for line in env_bytes.split("\n"):
@@ -141,6 +143,7 @@ def activate(env, set_python_path=False, set_shell_path=True, debug=False):
         if not os.path.isdir(f"{env}/bin"):
             # if it's a path, it must have a bin dir
             raise Exception(f"Cannot find env: {env}")
+            
     # add notebook's base dir as a fall back for shell PATH
     env_dirs = [env, ]
     if CONDA_BIN_DIR is not None:
