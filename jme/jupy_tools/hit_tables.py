@@ -216,6 +216,9 @@ def _parse_blast_m8_polars(
     import polars as pl
     if scan_csv_args is None:
         scan_csv_args = {} 
+    # Select and name the first N columns by position (instead of passing
+    # new_columns to scan_csv) so that any extra columns (eg minimap2 PAF tags)
+    # are ignored
     hits = \
         pl.scan_csv(
             hit_table,
@@ -223,23 +226,27 @@ def _parse_blast_m8_polars(
             has_header=False,
             comment_prefix="#",
             skip_rows=skiprows,
-            new_columns=column_names,
             **scan_csv_args,
         ).select(
             *(
-                pl.col(c) for c in column_names
+                pl.nth(i).alias(c)
+                for i, c in enumerate(column_names)
             )
         )
 
     # format specific tweaks
     if format == LASTAL:
+        # query strand multiplier (needed for qend below)
         hits = hits.with_columns(
-            pl.col('qstrand').map_elements(
-                lambda qs: 1 if qs == '+' else -1,
-                return_dtype(pl.Int8)
-            ),
+            pl.when(pl.col('qstrand') == '+')
+              .then(1)
+              .otherwise(-1)
+              .cast(pl.Int8)
+              .alias('qsmult')
+        )
+        hits = hits.with_columns(
             (
-                pl.col('hstart') + pl.col('hmlen') + 1
+                pl.col('hstart') + pl.col('hmlen') - 1
             ).alias('hend'),
             (
                 pl.col('qstart') + (
@@ -574,8 +581,8 @@ def agg_hit_df_polars(non_ovl_hits, max_hit_fragments=0, keep_extent=False):
             if keep_extent:
                 # now the start is the smallest start and the end is the biggest end                
                 agg_args.extend([
-                    pl.min_horizontal(pl.col(scol), pl.col(ecol)).min(),
-                    pl.max_horizontal(pl.col(scol), pl.col(ecol)).max(),
+                    pl.min_horizontal(pl.col(scol), pl.col(ecol)).min().alias(scol),
+                    pl.max_horizontal(pl.col(scol), pl.col(ecol)).max().alias(ecol),
                 ])                                                         
     
     agg_hits = non_ovl_hits.group_by(

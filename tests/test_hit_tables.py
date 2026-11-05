@@ -267,7 +267,7 @@ def test_parse_blast_polars_empty(pl, tmp_path):
 
 
 def test_parse_paf_polars(pl, tmp_path):
-    # just the 12 standard columns (see the xfail below for tags)
+    # just the 12 standard columns (see the next test for tags)
     path = _write(tmp_path, "".join(
         "\t".join(line.split("\t")[:12]) + "\n"
         for line in PAF_TEXT.splitlines()
@@ -278,10 +278,8 @@ def test_parse_paf_polars(pl, tmp_path):
     assert numpy.allclose(df['pctid'].to_numpy(), pd_df.pctid.values)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "the polars parser passes new_columns to scan_csv, which fails when the "
-    "file has more columns than the format (eg minimap2 PAF tags)"))
 def test_parse_paf_polars_with_tags(pl, tmp_path):
+    """ extra columns (minimap2 tags) are ignored """
     path = _write(tmp_path, PAF_TEXT)
     df = hit_tables.parse_blast_m8(path, format=hit_tables.PAF, use_polars=True)
     assert df.shape == (14, 13)
@@ -297,9 +295,6 @@ def test_parse_blast_polars_matches_pandas(pl, tmp_path):
     assert df['score'].to_list() == list(pd_df.score)
 
 
-@pytest.mark.xfail(strict=True, raises=NameError, reason=(
-    "_parse_blast_m8_polars calls return_dtype(...) instead of passing "
-    "return_dtype=... for the LASTAL qstrand column"))
 def test_parse_lastal_polars(pl, tmp_path):
     path = _write(tmp_path, LASTAL_TEXT)
     df = hit_tables.parse_blast_m8(path, format=hit_tables.LASTAL,
@@ -308,6 +303,8 @@ def test_parse_lastal_polars(pl, tmp_path):
     assert df['mlen'].to_list() == list(pd_df.mlen)
     assert df['hend'].to_list() == list(pd_df.hend)
     assert df['qend'].to_list() == list(pd_df.qend)
+    assert df['qsmult'].to_list() == list(pd_df.qsmult)
+    assert df['evalue'].to_list() == list(pd_df.evalue)
 
 
 ###
@@ -508,9 +505,6 @@ def test_agg_hit_table_polars_lazy(pl, tmp_path):
     _check_small_agg(_polars_to_pandas(agg.collect()))
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "agg_hit_df_polars names both the min and max extent expressions after "
-    "the start column, so keep_extent=True raises a DuplicateError"))
 def test_agg_hit_table_polars_keep_extent(pl, tmp_path):
     path = _write(tmp_path, SMALL_BLAST_PLUS)
     agg = hit_tables.agg_hit_table(path, format=hit_tables.BLAST_PLUS,
