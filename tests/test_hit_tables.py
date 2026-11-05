@@ -62,7 +62,8 @@ def test_column_definitions():
     assert hit_tables.BLAST_PLUS_COLUMNS[:12] == hit_tables.BLAST_COLUMNS
     assert len(hit_tables.BLAST_PLUS_COLUMNS) == 15
     assert len(hit_tables.PAF_COLUMNS) == 12
-    assert len(hit_tables.HIT_TABLE_COLUMNS[hit_tables.PAF_ALL]) == 16
+    # PAF_ALL tags are parsed by name, so only the standard columns are fixed
+    assert hit_tables.HIT_TABLE_COLUMNS[hit_tables.PAF_ALL] == hit_tables.PAF_COLUMNS
     assert len(hit_tables.LASTAL_COLUMNS) == 14
 
 
@@ -120,20 +121,107 @@ def test_parse_paf_pctid():
     assert list(df.columns) == hit_tables.PAF_COLUMNS + ['pctid']
 
 
+PAF_TAGS = ['tp', 'cm', 's1', 's2', 'dv', 'rl']
+
+
 def test_parse_paf_all():
     df = hit_tables.parse_blast_m8(_stream(PAF_TEXT), format=hit_tables.PAF_ALL)
-    assert df.shape == (14, 17)
-    assert df.tp.iloc[0] == 'tp:A:P'
-    assert df.cm.iloc[0] == 'cm:i:2404'
+    assert df.shape == (14, 19)
+    assert list(df.columns) == hit_tables.PAF_COLUMNS + PAF_TAGS + ['pctid']
+    # the standard columns match the PAF parser
+    paf = hit_tables.parse_blast_m8(_stream(PAF_TEXT), format=hit_tables.PAF)
+    pandas.testing.assert_frame_equal(df[paf.columns], paf)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "PAF_ALL names tag columns by position (tp, cm, dv, rl), but minimap2 "
-    "writes s1 (and usually s2) between cm and dv"))
-def test_parse_paf_all_tag_columns():
+def test_parse_paf_all_tag_values():
+    """ tags are found by name, and values are converted by tag type """
     df = hit_tables.parse_blast_m8(_stream(PAF_TEXT), format=hit_tables.PAF_ALL)
-    assert df.dv.iloc[0] == 'dv:f:0.0946'
-    assert df.rl.iloc[0] == 'rl:i:747'
+    first = df.iloc[0]
+    assert first.tp == 'P'
+    assert first.cm == 2404
+    assert first.s1 == 18410
+    assert first.s2 == 12981
+    assert first.dv == 0.0946
+    assert first.rl == 747
+
+    # minimap2 doesn't write s2 for secondary hits, which shifts dv and rl
+    secondary = df[df.tp == 'S']
+    assert len(secondary) == 2
+    assert secondary.s2.isna().all()
+    assert list(secondary.dv) == [0.0757, 0.0934]
+    assert list(secondary.rl) == [2049, 201]
+
+    # integer tags stay integers even with missing values
+    assert str(df.s2.dtype) == 'Int64'
+    assert str(df.cm.dtype) == 'Int64'
+    assert df.dv.dtype == numpy.float64
+
+
+# tags vary with minimap2 options (and other tools add their own)
+PAF_VARIED_TAGS = (
+    "# comment\n"
+    "r1\t1000\t0\t100\t+\tc1\t5000\t200\t300\t95\t100\t60"
+    "\tNM:i:5\tms:i:180\tAS:i:180\tnn:i:0\ttp:A:P\tcm:i:10\ts1:i:90\ts2:i:0"
+    "\tde:f:0.05\trl:i:0\tcg:Z:100M\n"
+    "r2\t800\t10\t60\t-\tc1\t5000\t1000\t1050\t48\t50\t255"
+    "\ttp:A:S\tcs:Z::20*ag:29\tzz:B:i,1,2,3\tid:f:96\n"
+    # unmapped (minimap2 --paf-no-hit)
+    "r3\t500\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0\trl:i:0\n"
+)
+
+
+def test_parse_paf_all_varied_tags():
+    df = hit_tables.parse_blast_m8(_stream(PAF_VARIED_TAGS),
+                                   format=hit_tables.PAF_ALL)
+    # unmapped query is skipped
+    assert list(df['query']) == ['r1', 'r2']
+    tags = ['NM', 'ms', 'AS', 'nn', 'tp', 'cm', 's1', 's2', 'de', 'rl', 'cg',
+            'cs', 'zz', 'id']
+    assert list(df.columns) == hit_tables.PAF_COLUMNS + tags + ['pctid']
+
+    r1, r2 = df.iloc[0], df.iloc[1]
+    assert (r1.NM, r1.cg, r1.de) == (5, '100M', 0.05)
+    assert pandas.isna(r2.NM)
+    # string values can contain ":"
+    assert r2.cs == ':20*ag:29'
+    # numeric arrays (B) are left as strings
+    assert r2.zz == 'i,1,2,3'
+    assert r2.id == 96.0
+    # 255 means missing mapping quality, but it's left as is
+    assert r2.mapqv == 255
+
+
+def test_parse_paf_all_cutoffs_on_tags():
+    df = hit_tables.parse_blast_m8(_stream(PAF_TEXT), format=hit_tables.PAF_ALL,
+                                   dv=-0.08)
+    assert sorted(df.dv) == [0.0383, 0.0409, 0.072, 0.0757, 0.076, 0.0792]
+
+
+def test_parse_paf_all_from_path_and_skiprows(tmp_path):
+    path = _write(tmp_path, "skip this line\n" + PAF_TEXT)
+    df = hit_tables.parse_blast_m8(path, format=hit_tables.PAF_ALL, skiprows=1)
+    assert df.shape == (14, 19)
+
+
+def test_parse_paf_all_empty():
+    assert hit_tables.parse_blast_m8(_stream("# nothing\n"),
+                                     format=hit_tables.PAF_ALL) is None
+
+
+def test_parse_paf_tags_errors():
+    with pytest.raises(ValueError, match="fewer than 12 columns"):
+        hit_tables.parse_paf_tags(_stream("q\t100\t0\t10\n"))
+    line = PAF_TEXT.splitlines()[0] + "\tnot_a_tag\n"
+    with pytest.raises(ValueError, match="not_a_tag"):
+        hit_tables.parse_paf_tags(_stream(line))
+
+
+def test_parse_paf_all_overlap_removal():
+    text = PAF_TEXT.splitlines()[0] + "\n"
+    df = hit_tables.parse_blast_m8(_stream(text * 2), format=hit_tables.PAF_ALL,
+                                   pair_overlap_buffer=0)
+    assert df.shape == (1, 19)
+    assert df.tp.iloc[0] == 'P'
 
 
 def test_parse_blast():
@@ -283,6 +371,31 @@ def test_parse_paf_polars_with_tags(pl, tmp_path):
     path = _write(tmp_path, PAF_TEXT)
     df = hit_tables.parse_blast_m8(path, format=hit_tables.PAF, use_polars=True)
     assert df.shape == (14, 13)
+
+
+def test_parse_paf_all_polars(pl, tmp_path):
+    path = _write(tmp_path, PAF_TEXT)
+    df = hit_tables.parse_blast_m8(path, format=hit_tables.PAF_ALL,
+                                   use_polars=True)
+    pd_df = hit_tables.parse_blast_m8(path, format=hit_tables.PAF_ALL)
+    assert df.columns == list(pd_df.columns)
+    assert df['tp'].to_list() == list(pd_df.tp)
+    assert df['s2'].null_count() == 2
+    assert df['s2'].dtype == pl.Int64
+    assert df['dv'].to_list() == list(pd_df.dv)
+    assert numpy.allclose(df['pctid'].to_numpy(), pd_df.pctid.values)
+
+    lazy = hit_tables.parse_blast_m8(_stream(PAF_VARIED_TAGS),
+                                     format=hit_tables.PAF_ALL,
+                                     use_polars='lazy', NM=1)
+    assert isinstance(lazy, pl.LazyFrame)
+    assert lazy.collect()['query'].to_list() == ['r1']
+
+
+def test_parse_paf_all_polars_empty(pl):
+    assert hit_tables.parse_blast_m8(_stream("# nothing\n"),
+                                     format=hit_tables.PAF_ALL,
+                                     use_polars=True) is None
 
 
 def test_parse_blast_polars_matches_pandas(pl, tmp_path):
@@ -462,6 +575,42 @@ def test_agg_hit_df_with_matches_column():
     assert 'mfrac' in agg.columns
 
 
+# Two PAF fragments for one query/hit pair. PAF positions are 0-based and
+# end-exclusive, so lengths are end - start
+PAF_PAIR = (
+    "q\t1000\t0\t100\t+\th\t2000\t500\t600\t90\t100\t60\n"
+    "q\t1000\t200\t250\t-\th\t2000\t1000\t1050\t45\t50\t60\n"
+)
+
+
+@pytest.mark.parametrize('fmt', [hit_tables.PAF, hit_tables.PAF_ALL])
+def test_agg_hit_table_paf_lengths(fmt):
+    agg = hit_tables.agg_hit_table(_stream(PAF_PAIR), format=fmt,
+                                   keep_extent=True)
+    row = agg.iloc[0]
+    assert row.qmlen == 150
+    assert row.hmlen == 150
+    assert (row.qstart, row.qend, row.hstart, row.hend) == (0, 250, 500, 1050)
+
+
+def test_agg_hit_df_bed_coords():
+    hits = hit_tables.parse_blast_m8(_stream(PAF_PAIR), format=hit_tables.PAF)
+    # detected from the strand column
+    assert hit_tables.agg_hit_df(hits).qmlen.iloc[0] == 150
+    # or set explicitly
+    assert hit_tables.agg_hit_df(hits, bed_coords=False).qmlen.iloc[0] == 152
+    blast = hit_tables.parse_blast_m8(_stream(SMALL_BLAST))
+    assert hit_tables.agg_hit_df(blast, bed_coords=True) \
+        .set_index(['query', 'hit']).loc[('q2', 'h1'), 'qmlen'] == 299
+
+
+def test_use_bed_coords():
+    assert hit_tables._use_bed_coords(None, ['query', 'strand'])
+    assert not hit_tables._use_bed_coords(None, ['query', 'qstart'])
+    assert hit_tables._use_bed_coords(True, ['query'])
+    assert not hit_tables._use_bed_coords(False, ['strand'])
+
+
 def test_agg_hit_table():
     agg = hit_tables.agg_hit_table(_stream(SMALL_BLAST_PLUS),
                                    format=hit_tables.BLAST_PLUS)
@@ -543,6 +692,28 @@ def test_agg_hit_df_dispatches_to_polars(pl, tmp_path):
     lazy_agg = hit_tables.agg_hit_df(hits.lazy(), keep_extent=True)
     assert isinstance(lazy_agg, pl.LazyFrame)
     _check_small_agg(_polars_to_pandas(lazy_agg.collect()), keep_extent=True)
+
+
+@pytest.mark.parametrize('fmt', [hit_tables.PAF, hit_tables.PAF_ALL])
+def test_agg_hit_table_polars_paf_lengths(pl, tmp_path, fmt):
+    path = _write(tmp_path, PAF_PAIR)
+    agg = hit_tables.agg_hit_table(path, format=fmt, use_polars=True,
+                                   keep_extent=True)
+    row = agg.row(0, named=True)
+    assert row['qmlen'] == 150
+    assert row['hmlen'] == 150
+    assert (row['qstart'], row['qend']) == (0, 250)
+
+
+def test_agg_hit_polars_df_paf_lengths(pl, tmp_path):
+    path = _write(tmp_path, PAF_PAIR)
+    hits = hit_tables.parse_blast_m8(path, format=hit_tables.PAF,
+                                     use_polars=True)
+    # agg_hit_df hands polars tables to agg_hit_polars_df
+    assert hit_tables.agg_hit_df(hits)['qmlen'].to_list() == [150]
+    assert hit_tables.agg_hit_df(hits, bed_coords=False)['qmlen'].to_list() \
+        == [152]
+    assert hit_tables.agg_hit_df_polars(hits)['qmlen'].to_list() == [150]
 
 
 def test_agg_hit_polars_df_errors(pl):
