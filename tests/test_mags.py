@@ -83,7 +83,7 @@ def test_pseudo_mauve_layout(ax, mag_hits):
 
 
 def test_get_sorted_hits(mag_hits):
-    sorted_hits = mags.get_sorted_hits(mag_hits.copy(), other_cols=['pctid'])
+    sorted_hits = mags.get_sorted_hits(mag_hits, other_cols=['pctid'])
     assert list(sorted_hits.columns) == ['hit', 'hstart', 'hend', 'query',
                                          'qstart', 'qend', 'pctid']
     # h1 is longer, so it's first. h2 starts after h1 + 500bp buffer
@@ -97,18 +97,41 @@ def test_get_sorted_hits(mag_hits):
     "get_sorted_hits says it orders queries by their best hit, but it sorts "
     "scores ascending and uses the first (worst) hit"))
 def test_get_sorted_hits_query_order(mag_hits):
-    sorted_hits = mags.get_sorted_hits(mag_hits.copy(), other_cols=['pctid'])
+    sorted_hits = mags.get_sorted_hits(mag_hits, other_cols=['pctid'])
     # qB's best hit is on h1 (first hit contig), qA's best is on h2,
     #  so qB should come first in the query genome
     qB = sorted_hits[sorted_hits['query'] == 'qB'].iloc[0]
     assert qB.qstart == 1
 
 
-@pytest.mark.xfail(strict=True, raises=TypeError, reason=(
-    "get_sorted_hits defaults other_cols to None, then adds it to a list"))
 def test_get_sorted_hits_default_cols(mag_hits):
-    sorted_hits = mags.get_sorted_hits(mag_hits.copy())
-    assert len(sorted_hits.columns) == 6
+    sorted_hits = mags.get_sorted_hits(mag_hits)
+    assert list(sorted_hits.columns) == ['hit', 'hstart', 'hend', 'query',
+                                         'qstart', 'qend']
+    assert len(sorted_hits) == 3
+
+
+def test_get_sorted_hits_does_not_modify_input(mag_hits):
+    original = mag_hits.copy()
+    mags.get_sorted_hits(mag_hits, other_cols=['pctid'])
+    pandas.testing.assert_frame_equal(mag_hits, original)
+
+
+def test_get_sorted_hits_slice():
+    """ a filtered slice of a bigger table works without a pandas warning """
+    import warnings
+    hits = pandas.DataFrame([
+        ['qA', 400, 1, 400, 'h1', 1000, 51, 450, 400, 99.0],
+        ['qB', 300, 1, 300, 'h1', 1000, 501, 800, 300, 95.0],
+        ['qC', 300, 1, 300, 'h1', 1000, 1, 300, 300, 50.0],
+    ], columns=['query', 'qlen', 'qstart', 'qend', 'hit', 'hlen', 'hstart',
+                'hend', 'mlen', 'pctid'])
+    good_hits = hits[hits.pctid > 90]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        sorted_hits = mags.get_sorted_hits(good_hits, other_cols=['pctid'])
+    assert list(sorted_hits['query']) == ['qA', 'qB']
+    assert list(good_hits.columns) == list(hits.columns)
 
 
 def test_sorted_dot_plot(ax, mag_hits):

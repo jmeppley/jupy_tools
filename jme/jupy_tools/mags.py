@@ -116,7 +116,19 @@ def pseudo_mauve(hits, ax,
     return min_pctid
 
 def get_sorted_hits(hit_table, other_cols=None):
-    
+    """
+    Lay out the contigs of two MAGs end to end (hit contigs sorted by length,
+    query contigs by the hit contig they match) and return a table of hit
+    positions in those genome-wide coordinates, with columns:
+    hit, hstart, hend, query, qstart, qend, plus any other_cols.
+
+    The input table is not modified.
+    """
+    if other_cols is None:
+        other_cols = []
+    # work on a copy (new columns are added below)
+    hit_table = hit_table.copy()
+
     # get contig lengths from hit table (qlen and hlen columns)
     hit_lens = {h:hl for h, hl in hit_table[['hit','hlen']].values}
     # sort hits by length
