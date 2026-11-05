@@ -176,7 +176,7 @@ def glob_wildcards(
             yield wc_list
 
 def _hide_dots(path):
-    return re.sub(r"\.", "\.", path)
+    return re.sub(r"\.", r"\.", path)
 
 
 from numpy import log, power, abs
@@ -336,7 +336,10 @@ def go_to_dir(dirname):
 
     from IPython import get_ipython
     ipython = get_ipython()
-    ipython.magic(f'%cd {dirname}')
+    try:
+        ipython.run_line_magic('cd', dirname)
+    except AttributeError:
+        ipython.magic(f'%cd {dirname}')
 
     return dirname
 
