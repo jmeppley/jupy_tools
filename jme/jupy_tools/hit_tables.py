@@ -45,12 +45,24 @@ LASTAL_COLUMNS = ['score',
                   'match_string', 'eg2', 'e']
 
 
+# For PAF_ALL, only the 12 standard PAF columns are fixed. The optional
+# SAM-like tags (tp:A:P, cm:i:2404, ...) that follow vary from line to line
+# (eg minimap2 only writes s2 for primary hits), so they are parsed by name
+# (see parse_paf_tags())
 HIT_TABLE_COLUMNS = {BLAST: BLAST_COLUMNS,
                      BLAST_PLUS: BLAST_PLUS_COLUMNS,
                      PAF: PAF_COLUMNS,
-                     PAF_ALL: PAF_COLUMNS + ['tp','cm','dv','rl'],
+                     PAF_ALL: PAF_COLUMNS,
                      LASTAL: LASTAL_COLUMNS,
                     }
+
+# Formats that use 0-based, end-exclusive (BED-style) coordinates. Alignment
+# lengths are end - start for these, and end + 1 - start for the others.
+BED_COORD_FORMATS = {PAF, PAF_ALL}
+
+# how to convert SAM-style tag values (name:type:value) by type character
+#  (B (numeric arrays) and H (hex) are left as strings)
+_TAG_TYPES = {'i': int, 'f': float}
 
 paf_rexp = re.compile(r"""^(?P<query>\S+)\t
                           (?P<qlen>\d+)\t
@@ -99,7 +111,8 @@ blast_tab_rexp = re.compile(r"""^
                         """,
                              flags=re.VERBOSE)
 
-HIT_TABLE_REXPS = {PAF: paf_rexp, BLAST: blast_tab_rexp, BLAST_PLUS: blast_plus_rexp}
+HIT_TABLE_REXPS = {PAF: paf_rexp, PAF_ALL: paf_rexp, BLAST: blast_tab_rexp,
+                   BLAST_PLUS: blast_plus_rexp}
 
 def computeLastHitValues(blocks):
     """
@@ -122,6 +135,79 @@ def computeLastHitValues(blocks):
             matchLen += mml
 
     return matchLen
+
+
+_PAF_INT_COLUMNS = {'qlen', 'qstart', 'qend', 'hlen', 'hstart', 'hend',
+                    'matches', 'mlen', 'mapqv'}
+
+
+def _generate_paf_rows(hit_table, skiprows=0, tag_types=None):
+    """
+    Yields one dict per PAF line with the 12 standard columns plus one entry per
+    optional tag (keyed by tag name, with values converted by tag type).
+
+    Skips the first skiprows lines, comment lines (#) and lines for unmapped
+    queries (strand is "*", as written by minimap2 --paf-no-hit).
+
+    If tag_types is a dict, it's filled with tag name -> type character.
+    """
+    if isinstance(hit_table, str):
+        with open(hit_table) as lines:
+            yield from _generate_paf_rows(lines, skiprows, tag_types)
+        return
+
+    for i, line in enumerate(hit_table):
+        if i < skiprows:
+            continue
+        if isinstance(line, bytes):
+            line = line.decode()
+        line = line.rstrip("\r\n")
+        if len(line) == 0 or line.startswith("#"):
+            continue
+        fields = line.split("\t")
+        if len(fields) < len(PAF_COLUMNS):
+            raise ValueError("PAF line has fewer than 12 columns:\n" + line)
+        if fields[4] == "*":
+            # unmapped query
+            continue
+
+        row = {
+            col: (int(value) if col in _PAF_INT_COLUMNS else value)
+            for col, value in zip(PAF_COLUMNS, fields)
+        }
+        for tag in fields[len(PAF_COLUMNS):]:
+            try:
+                name, tag_type, value = tag.split(":", 2)
+            except ValueError:
+                raise ValueError(f"Can't parse PAF tag '{tag}' in line:\n" + line)
+            row[name] = _TAG_TYPES.get(tag_type, str)(value)
+            if tag_types is not None:
+                tag_types.setdefault(name, tag_type)
+        yield row
+
+
+def parse_paf_tags(hit_table, skiprows=0):
+    """
+    Load a PAF file (or file-like object) into a pandas.DataFrame with the
+    standard 12 PAF columns plus one column for each optional tag found in
+    the file. Tags missing from a line are null (eg minimap2 doesn't write s2
+    for secondary hits). Values are converted using the tag type:
+    i -> integer (nullable Int64), f -> float, anything else -> string.
+
+    The tag prefix is dropped, so 'tp:A:P' becomes 'P' in the 'tp' column.
+
+    Lines for unmapped queries (strand is "*") are skipped.
+    """
+    tag_types = {}
+    rows = list(_generate_paf_rows(hit_table, skiprows, tag_types))
+    hits = pandas.DataFrame(rows, columns=PAF_COLUMNS + list(tag_types))
+    for col in PAF_COLUMNS:
+        if col in _PAF_INT_COLUMNS:
+            hits[col] = hits[col].astype('int64')
+    for name, tag_type in tag_types.items():
+        if tag_type == 'i':
+            hits[name] = hits[name].astype('Int64')
+    return hits
 
 
 def parse_blast_m8(
@@ -163,16 +249,20 @@ def parse_blast_m8(
             **cutoffs,
         )
 
-    hits = \
-        pandas.read_csv(
-            hit_table,
-            sep="\t",
-            header=None,
-            comment="#",
-            usecols=use_cols,
-            names=column_names,
-            skiprows=skiprows,
-        )
+    if format == PAF_ALL:
+        # tags vary by line, so parse them by name
+        hits = parse_paf_tags(hit_table, skiprows=skiprows)
+    else:
+        hits = \
+            pandas.read_csv(
+                hit_table,
+                sep="\t",
+                header=None,
+                comment="#",
+                usecols=use_cols,
+                names=column_names,
+                skiprows=skiprows,
+            )
 
     if hits.shape[0] == 0:
         ## if there are no hits, return None
@@ -216,30 +306,50 @@ def _parse_blast_m8_polars(
     import polars as pl
     if scan_csv_args is None:
         scan_csv_args = {} 
-    hits = \
-        pl.scan_csv(
-            hit_table,
-            separator="\t",
-            has_header=False,
-            comment_prefix="#",
-            skip_rows=skiprows,
-            new_columns=column_names,
-            **scan_csv_args,
-        ).select(
-            *(
-                pl.col(c) for c in column_names
+    if format == PAF_ALL:
+        # tags vary by line, so parse them by name (see parse_paf_tags())
+        tag_types = {}
+        rows = list(_generate_paf_rows(hit_table, skiprows, tag_types))
+        tag_dtypes = {'i': pl.Int64, 'f': pl.Float64}
+        schema = {
+            **{col: (pl.Int64 if col in _PAF_INT_COLUMNS else pl.String)
+               for col in PAF_COLUMNS},
+            **{name: tag_dtypes.get(tag_type, pl.String)
+               for name, tag_type in tag_types.items()},
+        }
+        hits = pl.from_dicts(rows, schema=schema).lazy()
+    else:
+        # Select and name the first N columns by position (instead of passing
+        # new_columns to scan_csv) so that any extra columns (eg minimap2 PAF
+        # tags) are ignored
+        hits = \
+            pl.scan_csv(
+                hit_table,
+                separator="\t",
+                has_header=False,
+                comment_prefix="#",
+                skip_rows=skiprows,
+                **scan_csv_args,
+            ).select(
+                *(
+                    pl.nth(i).alias(c)
+                    for i, c in enumerate(column_names)
+                )
             )
-        )
 
     # format specific tweaks
     if format == LASTAL:
+        # query strand multiplier (needed for qend below)
         hits = hits.with_columns(
-            pl.col('qstrand').map_elements(
-                lambda qs: 1 if qs == '+' else -1,
-                return_dtype(pl.Int8)
-            ),
+            pl.when(pl.col('qstrand') == '+')
+              .then(1)
+              .otherwise(-1)
+              .cast(pl.Int8)
+              .alias('qsmult')
+        )
+        hits = hits.with_columns(
             (
-                pl.col('hstart') + pl.col('hmlen') + 1
+                pl.col('hstart') + pl.col('hmlen') - 1
             ).alias('hend'),
             (
                 pl.col('qstart') + (
@@ -380,7 +490,19 @@ def _check_columns(frame, col, is_lazy=False):
         return col in frame.collect_schema()
     return col in frame.columns
 
-def agg_hit_polars_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False):
+def _use_bed_coords(bed_coords, columns):
+    """
+    Should alignment lengths be end - start (0-based, end exclusive) instead of
+    end + 1 - start? If not specified, guess from the columns: of the
+    supported formats, only PAF tables have a 'strand' column.
+    """
+    if bed_coords is None:
+        return 'strand' in columns
+    return bed_coords
+
+
+def agg_hit_polars_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False,
+                      bed_coords=None):
     import polars as pl
     
     if isinstance(non_ovl_hits, pl.LazyFrame):
@@ -392,6 +514,7 @@ def agg_hit_polars_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False):
                         str(type(non_ovl_hits)))
 
     columns = set(non_ovl_hits.collect_schema() if lazy else non_ovl_hits.columns)
+    end_offset = 0 if _use_bed_coords(bed_coords, columns) else 1
     
     if 'matches' not in columns:
         non_ovl_hits = non_ovl_hits.with_columns(
@@ -440,7 +563,7 @@ def agg_hit_polars_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False):
 
             # calculate query and hit specific alignment lengths
             agg_col_exprs.append(
-                (pl.col(ecol) + 1 - pl.col(scol)).sum().alias(f"{pref}mlen")
+                (pl.col(ecol) + end_offset - pl.col(scol)).sum().alias(f"{pref}mlen")
             )
 
     post_agg_cols = [
@@ -459,10 +582,25 @@ def agg_hit_polars_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False):
 
     return agg_hits
     
-def agg_hit_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False):
+def agg_hit_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False,
+               bed_coords=None):
+    """
+    Merge hit fragments into one row per query/hit pair
+
+    params:
+     * max_hit_fragments: only merge the N best fragments (unlimited)
+     * keep_extent: keep the smallest start and largest end positions
+     * bed_coords: if True, positions are 0-based and end-exclusive (as in
+       PAF), so alignment lengths are end - start. If False (BLAST style),
+       they are end + 1 - start. If None, PAF tables are detected by their
+       'strand' column.
+    """
     if not isinstance(non_ovl_hits, pandas.DataFrame):
         # try polars
-        return agg_hit_polars_df(non_ovl_hits, max_hit_fragments, keep_extent)
+        return agg_hit_polars_df(non_ovl_hits, max_hit_fragments, keep_extent,
+                                 bed_coords)
+
+    end_offset = 0 if _use_bed_coords(bed_coords, non_ovl_hits.columns) else 1
         
     # aggregate all hits by hit/query pair
     if 'matches' not in non_ovl_hits.columns:
@@ -505,7 +643,7 @@ def agg_hit_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False):
 
             # calculate query and hit specific alignment lengths
             non_ovl_hits = non_ovl_hits.eval(
-                f"{pref}mlen = 1 + {ecol} - {scol}"
+                f"{pref}mlen = {end_offset} + {ecol} - {scol}"
             )
             agg_dict[pref + "mlen"] = sum
     
@@ -522,7 +660,9 @@ def agg_hit_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False):
     return agg_hits    
 
 
-def agg_hit_df_polars(non_ovl_hits, max_hit_fragments=0, keep_extent=False):
+def agg_hit_df_polars(non_ovl_hits, max_hit_fragments=0, keep_extent=False,
+                      bed_coords=None):
+    """ polars version of agg_hit_df() """
     # aggregate all hits by hit/query pair
     import polars as pl
 
@@ -531,6 +671,7 @@ def agg_hit_df_polars(non_ovl_hits, max_hit_fragments=0, keep_extent=False):
         if isinstance(non_ovl_hits, pl.LazyFrame)
         else non_ovl_hits.schema.names()
     )
+    end_offset = 0 if _use_bed_coords(bed_coords, columns) else 1
     if 'matches' not in columns:
         non_ovl_hits = non_ovl_hits.with_columns(
                     (pl.col('pctid') * pl.col('mlen') /
@@ -567,15 +708,15 @@ def agg_hit_df_polars(non_ovl_hits, max_hit_fragments=0, keep_extent=False):
         # only if the columns exist
         if scol in columns and ecol in columns:                           
             agg_args.append(
-                ((pl.col(ecol) - pl.col(scol)).abs() + 1).alias(f"{pref}mlen").sum()
+                ((pl.col(ecol) - pl.col(scol)).abs() + end_offset).alias(f"{pref}mlen").sum()
             )
 
             # get max extent for all hits if requested                                              
             if keep_extent:
                 # now the start is the smallest start and the end is the biggest end                
                 agg_args.extend([
-                    pl.min_horizontal(pl.col(scol), pl.col(ecol)).min(),
-                    pl.max_horizontal(pl.col(scol), pl.col(ecol)).max(),
+                    pl.min_horizontal(pl.col(scol), pl.col(ecol)).min().alias(scol),
+                    pl.max_horizontal(pl.col(scol), pl.col(ecol)).max().alias(ecol),
                 ])                                                         
     
     agg_hits = non_ovl_hits.group_by(
@@ -610,16 +751,22 @@ def agg_hit_table(hit_table, ovl_buffer=0, max_hit_fragments=0,
     
      * ovl_buffer: allow merged hit fragments to overlap by this much (0)
      * max_hit_fragments: only merge the N best fragments (unlimited)
+     * keep_extent: keep the smallest start and largest end positions
+     * **parse_args: passed to parse_blast_m8()
     """
     non_ovl_hits = parse_blast_m8(hit_table, pair_overlap_buffer=ovl_buffer, **parse_args)
-    
+
     if non_ovl_hits is None:
         return None
 
-    if ('use_polars' in parse_args) and (parse_args['use_polars']):
-        return agg_hit_df_polars(non_ovl_hits, max_hit_fragments, keep_extent)
+    # PAF positions are 0-based and end-exclusive
+    bed_coords = parse_args.get('format', BLAST) in BED_COORD_FORMATS
 
-    return agg_hit_df(non_ovl_hits, max_hit_fragments, keep_extent)
+    if ('use_polars' in parse_args) and (parse_args['use_polars']):
+        return agg_hit_df_polars(non_ovl_hits, max_hit_fragments, keep_extent,
+                                 bed_coords)
+
+    return agg_hit_df(non_ovl_hits, max_hit_fragments, keep_extent, bed_coords)
 
 ## SAM flags
 bit_names = [
