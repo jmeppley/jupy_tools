@@ -214,4 +214,4 @@ try:
     fix_env()
 except:
     # but don't fail
-    print("WARNING: couldn't auto-acticate current kernel env")
+    print("WARNING: couldn't auto-activate current kernel env")
