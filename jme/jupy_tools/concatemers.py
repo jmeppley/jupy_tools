@@ -52,24 +52,30 @@ def get_qhits(last_out, mlen_cutoff=0, pctid_cutoff=0, table_format=BLAST, blast
         return hit_table.query("((hend - hstart) > 0) == ((qend - qstart) > 0)")
 
 def insert_self_hit(qhits, format=PAF):
-    """ add a self it for tables that don't have it"""
+    """ add a full length self hit for tables that don't have it (eg minimap2)
+
+    The new row has index -1. PAF positions are 0-based and end-exclusive, so
+    the hit covers 0 to qlen.
+    """
     if format == PAF:
         query, qlength = qhits[['query','qlen']].values[0]
-        new_row = pandas.Series({'query': query,
-                                 'qlen': qlength,
-                                 'qstart': 1,
-                                 'qend': qlength,
-                                 'strand': "+",
-                                 'hit': query,
-                                 'hlen': qlength,
-                                 'hstart': 1,
-                                 'hend': qlength,
-                                 'matches': qlength,
-                                 'mlen': qlength,
-                                 'mapqv': 0,
-                                 'pctid': 1,
-                                }, name=-1)
-        return qhits.append(new_row)
+        new_row = pandas.DataFrame([{'query': query,
+                                     'qlen': qlength,
+                                     'qstart': 0,
+                                     'qend': qlength,
+                                     'strand': "+",
+                                     'hit': query,
+                                     'hlen': qlength,
+                                     'hstart': 0,
+                                     'hend': qlength,
+                                     'matches': qlength,
+                                     'mlen': qlength,
+                                     'mapqv': 0,
+                                     'pctid': 100.0,
+                                    }], index=[-1])
+        # only keep columns in the original table
+        new_row = new_row[[c for c in new_row.columns if c in qhits.columns]]
+        return pandas.concat([qhits, new_row])
     else:
         raise Exception("I don't know how to add a self hit for format = " + format)
 
@@ -219,11 +225,19 @@ def find_cmer_stats_clust(
 
 
 def find_cmer_stats_jb(qhits, seq_length=None, hit_cutoff=3000):
-    """ John B's quick method """
-    qlen = get_seq_length(qhits, seq_length)
+    """ John B's quick method:
     
+    The median distance between the query starts of long self hits.
+
+    Self hit tables are symmetric (every hit is also found with query and hit
+    swapped), and the hits above the diagonal all start at the start of the
+    query, so only the hits on or below the diagonal (qstart >= hstart) are
+    used. As with the other methods, only forward hits are used.
+    """
     # filter and sort
-    qhits = qhits.query(f"mlen >= .9 * {hit_cutoff}") \
+    qhits = qhits.query("((hend - hstart) > 0) == ((qend - qstart) > 0)") \
+                 .query("qstart >= hstart") \
+                 .query(f"mlen >= .9 * {hit_cutoff}") \
                  .sort_values('qstart')
     
     # need at least 3 hits
@@ -232,7 +246,7 @@ def find_cmer_stats_jb(qhits, seq_length=None, hit_cutoff=3000):
         # find median of difference of sorted hit starts
         starts = qhits.qstart.values
         diffs = [starts[i+1] - starts[i] for i in range(len(starts) - 1)]
-        repeat_size = np.median(diffs)
+        repeat_size = numpy.median(diffs)
         return repeat_size
     
 def get_seq_length(qhits, seq_length):
@@ -311,7 +325,8 @@ def check_repeat_size(ranks, repeat_size, qlen, refine=True, epsilon=1500):
                 clusters.setdefault(ranknum, []).append(rank)
 
     found_clusters = len(clusters)
-    expected_clusters = 1 + 2 * (int(numpy.round(repeat_size / qlen)) - 1)
+    # each copy (beyond the first) adds an offset on either side of the diagonal
+    expected_clusters = 1 + 2 * (int(numpy.round(qlen / repeat_size)) - 1)
 
     if refine:
         x, y = zip(*generate_xys_from_clusters(clusters))
@@ -336,7 +351,7 @@ def build_all_v_all_cmer_table(hit_table, cmer_table_out=None,
             'all': results for all sequences
             'notna': results with a non-null repeat size
             'state': results where state==True
-            float(): results where score >= float value
+            float(): results where repeat_score >= float value
             **kwargs are assed to get_qhits()
     """
     print(f"running {method} on {repr(hit_table)[:100]} and saving to {cmer_table_out}")
@@ -368,7 +383,7 @@ def build_all_v_all_cmer_table(hit_table, cmer_table_out=None,
     else:
         try:
             final_filter = float(final_filter)
-            cmer_table = cmer_table[cmer_table['score'] >= final_filter]
+            cmer_table = cmer_table[cmer_table['repeat_score'] >= final_filter]
         except ValueError:
             pass
 
@@ -389,7 +404,7 @@ def check_cmer(qhits, method=FFT, qh_cutoff=750, **kwargs):
     elif method.lower() == CLUST:
         repeat_size = find_cmer_stats_clust(qhits)
     elif method.lower() == JB:
-        repeat_size = find_cmer_stats_clust(qhits)
+        repeat_size = find_cmer_stats_jb(qhits)
     else:
         raise Exception("Unkown cmer method: " + method)
         
