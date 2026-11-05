@@ -5,8 +5,11 @@ import re, numpy
 from matplotlib.pyplot import cm
 try:
     from edl import blastm8
-except:
-    raise ModuleNotFoundException("Please install jmeppley::py_metagenomics to use this module")
+except ImportError as e:
+    raise ModuleNotFoundError(
+        "Please install jmeppley::py_metagenomics to use this module",
+        name=e.name,
+    ) from e
 
 def remove_overlapping_hits(hits, on_hit=True, buffer=0):
     regions = []

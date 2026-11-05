@@ -49,16 +49,14 @@ def make_hit(read, hstart, hend, qstart=1, qend=None, contig='c1', line=None):
 # missing dependency
 
 
-@pytest.mark.xfail(strict=True, raises=NameError, reason=(
-    "the import guard raises ModuleNotFoundException, which doesn't exist, "
-    "so a missing py_metagenomics gives a NameError instead of an "
-    "informative ImportError"))
 def test_missing_edl_message(monkeypatch):
     monkeypatch.setitem(sys.modules, 'edl', None)
     monkeypatch.setitem(sys.modules, 'edl.blastm8', None)
     monkeypatch.delitem(sys.modules, 'jme.jupy_tools.hit_map_plots')
-    with pytest.raises(ImportError, match="py_metagenomics"):
+    with pytest.raises(ModuleNotFoundError, match="py_metagenomics") as error:
         importlib.import_module('jme.jupy_tools.hit_map_plots')
+    assert isinstance(error.value.__cause__, ImportError)
+    assert error.value.name == 'edl'
 
 
 ###
