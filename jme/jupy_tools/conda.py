@@ -144,16 +144,15 @@ def activate(env, set_python_path=False, set_shell_path=True, debug=False):
             # if it's a path, it must have a bin dir
             raise Exception(f"Cannot find env: {env}")
             
-    # add notebook's base dir as a fall back for shell PATH
-    env_dirs = [env, ]
+    # the env's bin dir (as an absolute path)
+    env_dirs = [os.path.abspath(env) + "/bin", ]
+    # add conda's own bin dir (where the conda executable is) as a fall back
+    # for shell PATH (it's already a bin dir, so don't add /bin)
     if CONDA_BIN_DIR is not None:
-        env_dirs.append(CONDA_BIN_DIR)
+        env_dirs.append(os.path.abspath(CONDA_BIN_DIR))
 
     # save env path to global var
     active_env = env
-
-    # add /bin to end of env dirs (and use aboslute paths)
-    env_dirs = [os.path.abspath(d) + "/bin" for d in env_dirs]
 
     # update os.environ PATH (prepend env's bin dir)
     if set_shell_path:
