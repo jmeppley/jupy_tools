@@ -33,7 +33,7 @@ def get_cpu_mem_posns_in_top():
     top_header = decode(subprocess.check_output(TOP_HEADER_CMD, shell=True)).rstrip()
 
     # this only works for right justified (numeric?) fields
-    return {key:re.search(f"\s+{key}", top_header).span() for key in TOP_KEYS}
+    return {key:re.search(rf"\s+{key}", top_header).span() for key in TOP_KEYS}
   
 
 def get_top_kernels_from_top(user, sort_key, N):
