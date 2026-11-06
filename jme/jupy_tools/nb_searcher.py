@@ -1,4 +1,5 @@
 import attr
+import inspect
 import os
 import re
 
@@ -38,27 +39,23 @@ def _process_filter(filter_param, func_type=SEARCH_FILE):
         return [_get_rexp_filter(filter_param, func_type),]
     
     elif callable(filter_param):
-        # just put this function in a list
-        return [filter_param,]
+        # a single function (adapted to the search type if needed)
+        return [_get_rexp_filter(filter_param, func_type),]
     
     else:
         # assume it's an iterable
         return [
-            (
-                fp 
-                if callable(fp) 
-                else _get_rexp_filter(fp, func_type)
-            )
+            _get_rexp_filter(fp, func_type)
             for fp in filter_param
         ]
 
 
-NOTEBOOK_FILTERS = _process_filter(
-    [
-        lambda path, name: _NB_REXP.search(name) is not None,
-        lambda path, name: _CP_REXP.search(path) is None,
-    ]
-)
+# file name filters for non-checkpoint notebooks (in the form returned by
+# _process_filter: functions of path and file name)
+NOTEBOOK_FILTERS = [
+    lambda path, name: _NB_REXP.search(name) is not None,
+    lambda path, name: _CP_REXP.search(path) is None,
+]
 
 ### Primary class
 
@@ -135,27 +132,63 @@ class NotebookSearcher():
 
 ### Helper fns
 
+def _accepts_args(func, n):
+    """
+    Can func be called with n positional arguments? Returns None if the
+    signature can't be inspected (eg some builtins).
+    """
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        return None
+    try:
+        signature.bind(*([None] * n))
+    except TypeError:
+        return False
+    return True
+
+
+def _try_call(func, *args):
+    """
+    Fall back for functions without a signature: True if the call works,
+    False if it raises a TypeError
+    """
+    try:
+        func(*args)
+    except TypeError:
+        return False
+    return True
+
+
 def _get_rexp_filter(rexp, func_type=SEARCH_FILE):
     """
     Turn a pattern (string or re.Pattern) into a callable
+
+    Callables are returned as is if they already take the right arguments
+    (path and file name for file searches, a line of text for contents).
+    For file searches, a function that takes a single argument is called with
+    the full path.
     """
     if callable(rexp):
         if func_type == SEARCH_FILE:
-            try:
-                answer = rexp("path", "file")
+            takes_two = _accepts_args(rexp, 2)
+            if takes_two is None:
+                takes_two = _try_call(rexp, "path", "file")
+            if takes_two:
                 return rexp
-            except TypeError:
-                try:
-                    answer = rexp("path/file")
-                    return lambda p,f: rexp(os.path.join(p, f))
-                except TypeError:
-                    raise Exception("Function has to be able to take a string or path/filname pair!")
+            takes_one = _accepts_args(rexp, 1)
+            if takes_one is None:
+                takes_one = _try_call(rexp, "path/file")
+            if takes_one:
+                return lambda p, f: rexp(os.path.join(p, f))
+            raise Exception("Function has to be able to take a string or path/filname pair!")
         elif func_type == SEARCH_CONTENTS:
-            try:
-                answer = rexp("lines")
+            takes_one = _accepts_args(rexp, 1)
+            if takes_one is None:
+                takes_one = _try_call(rexp, "lines")
+            if takes_one:
                 return rexp
-            except TypeError:
-                raise Exception("Function has to be able to take a single string ")
+            raise Exception("Function has to be able to take a single string ")
         else:
             raise Exception(f"I don't know what to do with search type: '{func_type}'")
             
