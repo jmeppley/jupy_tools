@@ -4,6 +4,7 @@ Class that will inspect a jupyter server (via the API) and the local running pro
 """
 
 import datetime
+import getpass
 import os
 import re
 import subprocess
@@ -48,8 +49,19 @@ class KernelFinder():
     def __init__(self, 
                  jupyter_url,
                  jupyter_token,
-                 notebook_root=os.environ['HOME'],
-                 username=os.getlogin()):
+                 notebook_root=None,
+                 username=None):
+        """
+        params:
+         * jupyter_url, jupyter_token: for the jupyter server API
+         * notebook_root: the server's notebook dir (default: home dir)
+         * username: the user running the kernels (default: current user)
+        """
+        # (defaults are looked up here, not at import time)
+        if notebook_root is None:
+            notebook_root = os.path.expanduser('~')
+        if username is None:
+            username = getpass.getuser()
         self.url = jupyter_url
         self.token = jupyter_token
         self.user = username

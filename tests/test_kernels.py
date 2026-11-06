@@ -13,25 +13,25 @@ import pytest
 
 
 @pytest.fixture
-def kernels(monkeypatch):
-    """
-    Import the kernels module with os.getlogin() patched, because it's called
-    at import time and fails without a controlling terminal (eg in CI).
-    """
-    monkeypatch.setattr(os, 'getlogin', lambda: 'tester')
-    monkeypatch.delitem(sys.modules, 'jme.jupy_tools.kernels', raising=False)
-    module = importlib.import_module('jme.jupy_tools.kernels')
-    yield module
-    sys.modules.pop('jme.jupy_tools.kernels', None)
+def kernels():
+    from jme.jupy_tools import kernels
+    return kernels
 
 
-@pytest.mark.xfail(strict=True, raises=OSError, reason=(
-    "KernelFinder's username default calls os.getlogin() at import time, "
-    "which raises OSError when there is no controlling terminal"))
 def test_import_without_login(monkeypatch):
+    """ importing doesn't need a controlling terminal (eg in CI) """
     def no_login():
         raise OSError(25, "Inappropriate ioctl for device")
     monkeypatch.setattr(os, 'getlogin', no_login)
+    monkeypatch.delitem(sys.modules, 'jme.jupy_tools.kernels', raising=False)
+    try:
+        importlib.import_module('jme.jupy_tools.kernels')
+    finally:
+        sys.modules.pop('jme.jupy_tools.kernels', None)
+
+
+def test_import_without_home(monkeypatch):
+    monkeypatch.delenv('HOME', raising=False)
     monkeypatch.delitem(sys.modules, 'jme.jupy_tools.kernels', raising=False)
     try:
         importlib.import_module('jme.jupy_tools.kernels')
@@ -122,6 +122,33 @@ def finder(kernels, fake_top, monkeypatch, tmp_path):
                                   username='tester')
     finder.requests_made = requests_made
     return finder
+
+
+def test_kernel_finder_defaults(kernels, fake_top, monkeypatch, tmp_path):
+    """ the user and notebook root default to the current user and home dir """
+    monkeypatch.setattr(kernels.requests, 'get',
+                        lambda url, verify=True, headers=None:
+                        FakeResponse(SESSIONS))
+
+    def no_login():
+        raise OSError(25, "Inappropriate ioctl for device")
+    monkeypatch.setattr(os, 'getlogin', no_login)
+    # getpass.getuser() checks these in order
+    for var in ['LOGNAME', 'USER', 'LNAME', 'USERNAME']:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv('LOGNAME', 'env_user')
+
+    # looked up when the finder is made, not when the module was imported
+    monkeypatch.setenv('HOME', str(tmp_path / 'home1'))
+    finder = kernels.KernelFinder('https://jupyter:8888', 'TOKEN')
+    assert finder.user == 'env_user'
+    assert finder.root == str(tmp_path / 'home1')
+
+    monkeypatch.setenv('HOME', str(tmp_path / 'home2'))
+    monkeypatch.setenv('LOGNAME', 'other_user')
+    finder = kernels.KernelFinder('https://jupyter:8888', 'TOKEN')
+    assert finder.user == 'other_user'
+    assert finder.root == str(tmp_path / 'home2')
 
 
 def test_kernel_finder_init(finder):
