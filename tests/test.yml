@@ -3,9 +3,20 @@ channels:
  - bioconda
  - jmeppley
 dependencies:
+ # required
  - pandas
  - matplotlib
+ - polars
+ - ipykernel
+ # optional (used by some modules, tests are skipped if missing)
+ - attrs
+ - biopython
  - py-metagenomics
+ - pyyaml
+ - requests
+ - scikit-learn
+ - scipy
+ # testing
+ - pytest
+ - pytest-cov
  - pip
- - pip:
-    - nose2

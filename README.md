@@ -103,20 +103,34 @@ import yaml
 I'm writing this for future me. I am testing different testing protocols with
 my personal repositories, so I may not use the same approach anywhere else.
 
-### Running nose
+### Running pytest
 This is really simple
 
-First build and activate the testing environment defined in tests/test.yml
+First build and activate the testing environment defined in tests/test.yml,
+and install this package into it
 
     $ mamba env create -p ./test.env -f tests/test.yml
     $ conda activate ./test.env
+    $ pip install -e .
 
-Then run nosetests
+Then run pytest from the repository root
 
-    $ nosetests
+    $ pytest
+
+To see which lines are not covered:
+
+    $ pytest --cov=jme.jupy_tools --cov-report=term-missing
 
 ### Making tests
 
-See the `nose` documentation, but the short version is that the `nosestests`
-command finds every `*_test.py` file and runs any functions starting with
-`test`.
+There is one `tests/test_<module>.py` file for each module (code in
+`experimental/` is not tested). pytest runs any function starting with `test`
+in those files. Shared fixtures are in `tests/conftest.py`.
+
+Tests for optional dependencies (scipy, scikit-learn, biopython, polars) are
+skipped if the dependency is missing.
+
+Known bugs are recorded as tests marked with
+`@pytest.mark.xfail(strict=True, reason=...)`. They show up as "xfailed".
+When a bug is fixed, its test will start passing and pytest will report it as
+a failure (XPASS(strict)). Remove the `xfail` mark at that point.
