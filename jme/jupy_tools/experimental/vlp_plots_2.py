@@ -1461,8 +1461,6 @@ def get_collapsed_nodes(
     tree, 
     check_clade_fn,
     leaf_color_md,
-    max_d_cutoff=1.5, 
-    min_clade_size=3,
     debug=False,
 ):
     """
@@ -1483,6 +1481,7 @@ def get_collapsed_nodes(
         counts = Counter()
 
     # loop over clades (exclude single terminals)
+
     for clade in tree.get_nonterminals():
         if debug:
             counts['clades_all'] += 1
@@ -1497,6 +1496,12 @@ def get_collapsed_nodes(
         if skip:
             continue
 
+        # check the max depth
+        depths = clade.depths()
+        if not max(depths.values()):
+            depths = clade.depths(unit_branch_lengths=True)
+        max_d = max(depths[t] for t in clade.get_terminals())
+        
         if debug:
             counts['clades_checked'] += 1
 
