@@ -408,6 +408,11 @@ def agg_hit_polars_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False):
         pl.col('mlen').sum()
     ]
 
+    if 'score' in columns:
+        agg_col_exprs.append(
+            pl.col('score').sum()
+        )
+
     # keep one (the first) if either query or hit length is present
     for col in ['qlen', 'hlen']:
         if col in columns:
@@ -479,6 +484,9 @@ def agg_hit_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False):
     # addup match ids and match lengths
     agg_dict = {'matches':sum_first_N,
                 'mlen':sum_first_N}
+
+    if score in non_ovl_hits.columns:
+        agg_dict['score'] = sum_first_N
 
     # also save qlen and hlen if present
     for col in ['qlen', 'hlen']:
