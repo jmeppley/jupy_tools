@@ -93,13 +93,48 @@ def test_get_sorted_hits(mag_hits):
     assert (h1_hit.hstart, h1_hit.hend) == (101, 400)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "get_sorted_hits says it orders queries by their best hit, but it sorts "
-    "scores ascending and uses the first (worst) hit"))
 def test_get_sorted_hits_query_order(mag_hits):
     sorted_hits = mags.get_sorted_hits(mag_hits, other_cols=['pctid'])
     # qB's best hit is on h1 (first hit contig), qA's best is on h2,
     #  so qB should come first in the query genome
+    qB = sorted_hits[sorted_hits['query'] == 'qB'].iloc[0]
+    assert qB.qstart == 1
+    # qA starts after qB (300bp) + 500bp buffer
+    qA = sorted_hits[sorted_hits['query'] == 'qA']
+    assert set(qA.qstart) == {801}
+
+
+@pytest.mark.parametrize("mlen, pctid, best", [
+    # longer alignment wins at similar identity
+    ((400, 50), (95.0, 99.0), 'h2'),
+    ((50, 400), (99.0, 95.0), 'h1'),
+    # aligned length * pctid: 100 * 99 < 120 * 85
+    ((100, 120), (99.0, 85.0), 'h1'),
+])
+def test_get_sorted_hits_best_hit(mlen, pctid, best):
+    """ each query is placed by its hit with the highest mlen * pctid """
+    hits = pandas.DataFrame([
+        # qX hits both contigs, qY only hits h1, qZ only hits h2
+        ['qX', 500, 1, 400, 'h2', 1000, 1, 400, mlen[0], pctid[0]],
+        ['qX', 500, 1, 400, 'h1', 2000, 1, 400, mlen[1], pctid[1]],
+        ['qY', 500, 1, 400, 'h1', 2000, 1, 400, 400, 99.0],
+        ['qZ', 500, 1, 400, 'h2', 1000, 1, 400, 400, 99.0],
+    ], columns=['query', 'qlen', 'qstart', 'qend', 'hit', 'hlen', 'hstart',
+                'hend', 'mlen', 'pctid'])
+    sorted_hits = mags.get_sorted_hits(hits)
+    query_starts = sorted_hits.groupby('query').qstart.min()
+    # h1 is longer, so it's first. Queries placed on h1 come first
+    if best == 'h1':
+        assert query_starts['qX'] < query_starts['qZ']
+    else:
+        assert query_starts['qX'] > query_starts['qY']
+
+
+def test_get_sorted_hits_score_column(mag_hits):
+    """ an existing score column (eg from BLAST) is not used or changed """
+    hits = mag_hits.assign(score=[1000.0, 1.0, 1.0])
+    sorted_hits = mags.get_sorted_hits(hits, other_cols=['score'])
+    assert list(sorted_hits.score) == [1000.0, 1.0, 1.0]
     qB = sorted_hits[sorted_hits['query'] == 'qB'].iloc[0]
     assert qB.qstart == 1
 

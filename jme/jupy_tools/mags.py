@@ -136,9 +136,14 @@ def get_sorted_hits(hit_table, other_cols=None):
     hit_starts = get_contig_starts(hit_order, hit_lens)
 
     # we sort on the best hit here (instead of mean) to get a better diagonal
+    #  (the best hit has the highest aligned length * pctid)
     query_lens = {q:ql for q, ql in hit_table[['query','qlen']].values}
-    query_hit_order = {q:hit_order.index(data.eval('score = mlen * pctid').sort_values('score')['hit'].values[0])
-                       for q, data in hit_table.groupby('query')}
+    query_hit_order = {
+        q: hit_order.index(
+            data['hit'].values[(data['mlen'] * data['pctid']).values.argmax()]
+        )
+        for q, data in hit_table.groupby('query')
+    }
     query_order = sorted(query_lens, key=lambda q: query_hit_order[q])
     
     # using above orders, get start pos of each contig in genome
