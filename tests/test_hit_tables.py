@@ -630,6 +630,47 @@ def test_agg_hit_table_empty():
     assert hit_tables.agg_hit_table(_stream("# empty\n")) is None
 
 
+# scores for SMALL_BLAST_PLUS after overlap removal (the 3rd q1/h1 fragment,
+#  score 60, overlaps the 1st)
+SMALL_AGG_SCORES = {('q1', 'h1'): 200 + 90, ('q1', 'h2'): 350, ('q2', 'h1'): 500}
+
+
+def _scores(agg):
+    """ {(query, hit): score} from a pandas or polars aggregated table """
+    if not isinstance(agg, pandas.DataFrame):
+        agg = _polars_to_pandas(agg)
+    return {(q, h): s for q, h, s in agg[['query', 'hit', 'score']].values}
+
+
+@pytest.mark.parametrize('fmt, text', [
+    (hit_tables.BLAST_PLUS, SMALL_BLAST_PLUS),
+    (hit_tables.BLAST, SMALL_BLAST),
+])
+def test_agg_hit_table_score(fmt, text):
+    """ scores are summed over the (non overlapping) fragments """
+    agg = hit_tables.agg_hit_table(_stream(text), format=fmt)
+    assert _scores(agg) == SMALL_AGG_SCORES
+
+    # without overlap removal, all 3 q1/h1 fragments are summed
+    hits = hit_tables.parse_blast_m8(_stream(text), format=fmt)
+    assert _scores(hit_tables.agg_hit_df(hits))[('q1', 'h1')] == 200 + 90 + 60
+
+
+def test_agg_hit_table_score_max_fragments():
+    """ only the scores of the fragments that are kept are summed """
+    agg = hit_tables.agg_hit_table(_stream(SMALL_BLAST_PLUS),
+                                   format=hit_tables.BLAST_PLUS,
+                                   max_hit_fragments=1)
+    # the best q1/h1 fragment (most matches) has score 200
+    assert _scores(agg) == {**SMALL_AGG_SCORES, ('q1', 'h1'): 200}
+
+
+def test_agg_hit_table_no_score():
+    """ tables without a score column (eg PAF) don't get one """
+    agg = hit_tables.agg_hit_table(_stream(PAF_TEXT), format=hit_tables.PAF)
+    assert 'score' not in agg.columns
+
+
 ###
 # aggregation (polars)
 
@@ -714,6 +755,84 @@ def test_agg_hit_polars_df_paf_lengths(pl, tmp_path):
     assert hit_tables.agg_hit_df(hits, bed_coords=False)['qmlen'].to_list() \
         == [152]
     assert hit_tables.agg_hit_df_polars(hits)['qmlen'].to_list() == [150]
+
+
+@pytest.mark.parametrize('lazy', [False, True])
+def test_agg_hit_polars_df_score(pl, tmp_path, lazy):
+    """ agg_hit_df hands polars tables to agg_hit_polars_df """
+    path = _write(tmp_path, SMALL_BLAST_PLUS)
+    hits = hit_tables.parse_blast_m8(path, format=hit_tables.BLAST_PLUS,
+                                     use_polars='lazy' if lazy else True,
+                                     pair_overlap_buffer=0)
+    agg = hit_tables.agg_hit_df(hits)
+    if lazy:
+        assert isinstance(agg, pl.LazyFrame)
+        agg = agg.collect()
+    assert _scores(agg) == SMALL_AGG_SCORES
+
+
+@pytest.mark.parametrize('max_hit_fragments, q1h1_score', [(0, 290), (1, 200)])
+def test_agg_hit_table_polars_score(pl, tmp_path, max_hit_fragments,
+                                    q1h1_score):
+    """ agg_hit_table(use_polars=True) uses agg_hit_df_polars """
+    path = _write(tmp_path, SMALL_BLAST_PLUS)
+    agg = hit_tables.agg_hit_table(path, format=hit_tables.BLAST_PLUS,
+                                   use_polars=True,
+                                   max_hit_fragments=max_hit_fragments)
+    assert _scores(agg) == {**SMALL_AGG_SCORES, ('q1', 'h1'): q1h1_score}
+
+    # and directly
+    hits = hit_tables.parse_blast_m8(path, format=hit_tables.BLAST_PLUS,
+                                     use_polars=True, pair_overlap_buffer=0)
+    agg = hit_tables.agg_hit_df_polars(hits, max_hit_fragments=max_hit_fragments)
+    assert _scores(agg)[('q1', 'h1')] == q1h1_score
+
+
+@pytest.mark.parametrize('fmt, text', [
+    (hit_tables.BLAST, SMALL_BLAST),
+    (hit_tables.BLAST_PLUS, SMALL_BLAST_PLUS),
+    (hit_tables.BLAST_PLUS, M8_TEXT),
+    (hit_tables.PAF, PAF_TEXT),
+    (hit_tables.PAF, PAF_PAIR),
+    (hit_tables.PAF_ALL, PAF_TEXT),
+], ids=['blast', 'blast+', 'blast+_m8', 'paf', 'paf_pair', 'paf_all'])
+@pytest.mark.parametrize('options', [
+    {},
+    {'keep_extent': True},
+    {'ovl_buffer': 100},
+], ids=['default', 'keep_extent', 'ovl_buffer'])
+def test_agg_hit_table_pandas_polars_agree(pl, tmp_path, fmt, text, options):
+    """ pandas and polars aggregation give the same columns and values """
+    _check_pandas_polars_agree(tmp_path, fmt, text, **options)
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "with max_hit_fragments, agg_hit_df sums matches and mlen over the best "
+    "N fragments, but qmlen, hmlen and keep_extent positions over all of "
+    "them (polars uses only the best N for everything)"))
+@pytest.mark.parametrize('keep_extent', [False, True])
+def test_agg_hit_table_pandas_polars_agree_max_fragments(pl, tmp_path,
+                                                         keep_extent):
+    _check_pandas_polars_agree(tmp_path, hit_tables.BLAST_PLUS,
+                               SMALL_BLAST_PLUS, max_hit_fragments=1,
+                               keep_extent=keep_extent)
+
+
+def _check_pandas_polars_agree(tmp_path, fmt, text, **options):
+    path = _write(tmp_path, text)
+    pd_agg = hit_tables.agg_hit_table(path, format=fmt, **options)
+    pl_agg = _polars_to_pandas(
+        hit_tables.agg_hit_table(path, format=fmt, use_polars=True, **options))
+
+    assert set(pl_agg.columns) == set(pd_agg.columns)
+    pd_agg = pd_agg.sort_values(['query', 'hit']).reset_index(drop=True)
+    pl_agg = pl_agg.sort_values(['query', 'hit']).reset_index(drop=True)[
+        list(pd_agg.columns)]
+    for col in pd_agg.columns:
+        if pandas.api.types.is_numeric_dtype(pd_agg[col]):
+            assert numpy.allclose(pl_agg[col], pd_agg[col]), col
+        else:
+            assert list(pl_agg[col]) == list(pd_agg[col]), col
 
 
 def test_agg_hit_polars_df_errors(pl):

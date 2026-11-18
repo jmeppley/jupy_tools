@@ -592,6 +592,8 @@ def agg_hit_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False,
     """
     Merge hit fragments into one row per query/hit pair
 
+    matches, mlen and score (if present) are summed over the fragments.
+
     params:
      * max_hit_fragments: only merge the N best fragments (unlimited)
      * keep_extent: keep the smallest start and largest end positions
@@ -701,6 +703,10 @@ def agg_hit_df_polars(non_ovl_hits, max_hit_fragments=0, keep_extent=False,
         pl.col('matches').sum(),
         pl.col('mlen').sum(),
     ]
+
+    # and scores, if present
+    if 'score' in columns:
+        agg_args.append(pl.col('score').sum())
 
     # also save qlen and hlen if present
     for col in ['qlen', 'hlen']:
