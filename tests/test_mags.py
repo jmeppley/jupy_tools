@@ -130,6 +130,30 @@ def test_get_sorted_hits_best_hit(mlen, pctid, best):
         assert query_starts['qX'] > query_starts['qY']
 
 
+def test_get_sorted_hits_order_on_contig():
+    """
+    queries whose best hits are on the same hit contig are ordered by where
+    those hits are on it (not by their order in the table)
+    """
+    hits = pandas.DataFrame([
+        # qC's best hit is late on h1, qA's early, qB's in the middle
+        #  (on the reverse strand: position is the smaller coordinate)
+        ['qC', 300, 1, 300, 'h1', 1000, 701, 1000, 300, 99.0],
+        ['qA', 200, 1, 200, 'h1', 1000, 1, 200, 200, 99.0],
+        ['qB', 100, 1, 100, 'h1', 1000, 500, 401, 100, 99.0],
+        # a weaker hit for qA late on h1 doesn't move it
+        ['qA', 200, 1, 50, 'h1', 1000, 901, 950, 50, 80.0],
+        # qD's best hit is on h2 (shorter, so after h1), early on
+        ['qD', 400, 1, 400, 'h2', 500, 1, 400, 400, 99.0],
+    ], columns=['query', 'qlen', 'qstart', 'qend', 'hit', 'hlen', 'hstart',
+                'hend', 'mlen', 'pctid'])
+    sorted_hits = mags.get_sorted_hits(hits)
+    query_starts = sorted_hits.groupby('query').qstart.min()
+    # qA (200) + 500 buffer, then qB (100) + 500, then qC (300) + 500, then qD
+    assert query_starts.to_dict() == {'qA': 1, 'qB': 701, 'qC': 1301,
+                                      'qD': 2101}
+
+
 def test_get_sorted_hits_score_column(mag_hits):
     """ an existing score column (eg from BLAST) is not used or changed """
     hits = mag_hits.assign(score=[1000.0, 1.0, 1.0])
@@ -180,9 +204,38 @@ def test_sorted_dot_plot_no_ax(close_figures, mag_hits):
     assert len(plt.gca().get_lines()) == 3
 
 
-@pytest.mark.xfail(strict=True, raises=NameError, reason=(
-    "sorted_dot_plot refers to an undefined 'hits' variable when min_pctid "
-    "is None or negative"))
+def _line_colors(ax):
+    return [tuple(line.get_color()) for line in ax.get_lines()]
+
+
 def test_sorted_dot_plot_default_min_pctid(ax, mag_hits):
-    mags.sorted_dot_plot(mag_hits.copy(), ax=ax)
-    assert len(ax.get_lines()) == 3
+    """ by default, the color scale goes from the lowest pctid (80) to 100 """
+    from matplotlib import pyplot as plt
+    cmap = plt.get_cmap('cool')
+    mags.sorted_dot_plot(mag_hits, ax=ax)
+    # lines are drawn in the order of the hits (pctid 80, 99, 95)
+    assert _line_colors(ax) == [cmap(0.0), cmap(19 / 20), cmap(15 / 20)]
+
+
+def test_sorted_dot_plot_min_pctid(ax, mag_hits):
+    from matplotlib import pyplot as plt
+    cmap = plt.get_cmap('cool')
+    # a set bottom for the scale
+    mags.sorted_dot_plot(mag_hits, ax=ax, min_pctid=60)
+    assert _line_colors(ax)[0] == cmap(20 / 40)
+    # negative: 20 below the lowest pctid (80)
+    ax.clear()
+    mags.sorted_dot_plot(mag_hits, ax=ax, min_pctid=-20)
+    assert _line_colors(ax) == [cmap(20 / 40), cmap(39 / 40), cmap(35 / 40)]
+
+
+def test_sorted_dot_plot_all_identical(ax, mag_hits):
+    """ if every hit is 100%, the lines get the top color (not NaN) """
+    from matplotlib import pyplot as plt
+    hits = mag_hits.assign(pctid=100.0)
+    mags.sorted_dot_plot(hits, ax=ax)
+    assert _line_colors(ax) == [plt.get_cmap('cool')(1.0)] * 3
+    # the same for an explicit min_pctid of 100
+    ax.clear()
+    mags.sorted_dot_plot(hits, ax=ax, min_pctid=100)
+    assert _line_colors(ax) == [plt.get_cmap('cool')(1.0)] * 3

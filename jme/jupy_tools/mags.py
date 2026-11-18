@@ -117,9 +117,11 @@ def pseudo_mauve(hits, ax,
 
 def get_sorted_hits(hit_table, other_cols=None):
     """
-    Lay out the contigs of two MAGs end to end (hit contigs sorted by length,
-    query contigs by the hit contig they match) and return a table of hit
-    positions in those genome-wide coordinates, with columns:
+    Lay out the contigs of two MAGs end to end and return a table of hit
+    positions in those genome-wide coordinates. Hit contigs are sorted by
+    length. Query contigs are sorted by the hit contig of their best hit
+    (highest mlen * pctid), then by where that hit is on the hit contig, so
+    they line up along the diagonal. The returned columns are:
     hit, hstart, hend, query, qstart, qend, plus any other_cols.
 
     The input table is not modified.
@@ -136,14 +138,16 @@ def get_sorted_hits(hit_table, other_cols=None):
     hit_starts = get_contig_starts(hit_order, hit_lens)
 
     # we sort on the best hit here (instead of mean) to get a better diagonal
-    #  (the best hit has the highest aligned length * pctid)
+    #  (the best hit has the highest aligned length * pctid). Queries are
+    #  ordered by the hit contig of their best hit, then by where that hit
+    #  starts on the hit contig
     query_lens = {q:ql for q, ql in hit_table[['query','qlen']].values}
-    query_hit_order = {
-        q: hit_order.index(
-            data['hit'].values[(data['mlen'] * data['pctid']).values.argmax()]
-        )
-        for q, data in hit_table.groupby('query')
-    }
+    query_hit_order = {}
+    for q, data in hit_table.groupby('query'):
+        best = (data['mlen'] * data['pctid']).values.argmax()
+        best_hit = data['hit'].values[best]
+        best_pos = min(data['hstart'].values[best], data['hend'].values[best])
+        query_hit_order[q] = (hit_order.index(best_hit), best_pos)
     query_order = sorted(query_lens, key=lambda q: query_hit_order[q])
     
     # using above orders, get start pos of each contig in genome
@@ -170,6 +174,13 @@ def get_sorted_hits(hit_table, other_cols=None):
     return mag_hits
 
 def sorted_dot_plot(hit_table, ax=None, colormap='cool', min_pctid=None):
+    """
+    Draw a dot plot of the hits between two MAGs (see get_sorted_hits), with
+    lines colored by pctid from min_pctid to 100.
+
+    min_pctid: the bottom of the color scale. If None, use the lowest pctid
+    in the hits. If negative, go that far below the lowest pctid.
+    """
     mag_hits = get_sorted_hits(hit_table, other_cols=['pctid',])
     if isinstance(colormap, str):
         colormap = plt.get_cmap(colormap)
@@ -177,13 +188,17 @@ def sorted_dot_plot(hit_table, ax=None, colormap='cool', min_pctid=None):
     # color connections by pctid
     if min_pctid is None:
         # get the true minimum %ID from data
-        min_pctid = min(hits['pctid'])
+        min_pctid = min(hit_table['pctid'])
     elif min_pctid < 0:
         # if negative, go under true min by that much
-        min_pctid += min(hits['pctid'])
+        min_pctid += min(hit_table['pctid'])
+    pctid_range = 100 - min_pctid
 
     def get_line_color(pctid, colormap=colormap, min_pctid=min_pctid):
-        return colormap((pctid - min_pctid) / (100 - min_pctid))
+        if pctid_range <= 0:
+            # eg all hits are 100%: use the top of the scale
+            return colormap(1.0)
+        return colormap((pctid - min_pctid) / pctid_range)
     
     if ax is None:
         ax = plt
