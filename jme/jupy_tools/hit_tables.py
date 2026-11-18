@@ -125,6 +125,10 @@ def computeLastHitValues(blocks):
         where integer elements indicate lenghts of matches and
         colon separated elements indicate lengths of gaps
     """
+    # an ungapped alignment's blocks are just a number, and if every line
+    #  in a file is ungapped, the column is read as integers
+    blocks = str(blocks)
+
     matchLen = 0
     for segment in blocks.split(','):
         try:

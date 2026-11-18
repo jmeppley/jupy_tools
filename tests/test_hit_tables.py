@@ -89,6 +89,9 @@ def test_hit_table_rexps(fmt, text):
     ("73,0:1,15,0:1,13,0:1,9", 73 + 1 + 15 + 1 + 13 + 1 + 9),
     ("10,5:0,10", 25),
     ("10,2:7,10", 27),
+    # ungapped blocks can come in as numbers
+    (100, 100),
+    (numpy.int64(42), 42),
 ])
 def test_compute_last_hit_values(blocks, mlen):
     assert hit_tables.computeLastHitValues(blocks) == mlen
@@ -406,6 +409,29 @@ def test_parse_blast_polars_matches_pandas(pl, tmp_path):
     assert df.shape == pd_df.shape
     assert df['hit'].to_list() == list(pd_df.hit)
     assert df['score'].to_list() == list(pd_df.score)
+
+
+# every alignment is ungapped, so the blocks column looks like integers
+LASTAL_UNGAPPED = (
+    "150\th1\t10\t100\t+\t2000\tq1\t0\t100\t+\t1000\t100\tEG2=1e-30\tE=2.5e-40\n"
+    "80\th2\t500\t50\t+\t1500\tq1\t400\t50\t-\t1000\t50\tEG2=1e-10\tE=3e-15\n"
+)
+
+
+def test_parse_lastal_ungapped():
+    df = hit_tables.parse_blast_m8(_stream(LASTAL_UNGAPPED),
+                                   format=hit_tables.LASTAL)
+    assert list(df.mlen) == [100, 50]
+    assert list(df.hend) == [109, 549]
+    assert list(df.evalue) == [2.5e-40, 3e-15]
+
+
+def test_parse_lastal_ungapped_polars(pl, tmp_path):
+    path = _write(tmp_path, LASTAL_UNGAPPED)
+    df = hit_tables.parse_blast_m8(path, format=hit_tables.LASTAL,
+                                   use_polars=True)
+    assert df['mlen'].to_list() == [100, 50]
+    assert df['hend'].to_list() == [109, 549]
 
 
 def test_parse_lastal_polars(pl, tmp_path):
