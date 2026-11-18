@@ -86,13 +86,35 @@ def test_name_filter(nb_root, name_filter, expected):
     assert _rel(found, nb_root) == expected
 
 
-@pytest.mark.xfail(strict=True, raises=TypeError, reason=(
-    "_get_rexp_filter can adapt single-argument callables, but "
-    "_process_filter passes callables through without calling it"))
 def test_name_filter_single_arg_callable(nb_root):
+    """ one argument functions are called with the full path """
     found = NotebookSearcher(str(nb_root)).find_notebooks(
         name_filter=lambda full_path: '/deep/' in full_path)
     assert _rel(found, nb_root) == {'project_b/deep/taxonomy.ipynb'}
+
+    # also in a list
+    found = NotebookSearcher(str(nb_root)).find_notebooks(
+        name_filter=["/project_", lambda full_path: full_path.endswith('s.ipynb')])
+    assert _rel(found, nb_root) == {'project_a/plots.ipynb'}
+
+
+def test_name_filter_uses_real_files(nb_root):
+    """
+    filters aren't called with made up paths to work out their arguments
+    (this one would raise FileNotFoundError)
+    """
+    sizes = sorted(os.path.getsize(nb_root / nb) for nb in ALL_NOTEBOOKS)
+    cutoff = sizes[0]
+
+    def big_notebooks(path, name):
+        return os.path.getsize(os.path.join(path, name)) > cutoff
+
+    found = NotebookSearcher(str(nb_root)).find_notebooks(
+        name_filter=big_notebooks)
+    expected = {nb for nb in ALL_NOTEBOOKS
+                if os.path.getsize(nb_root / nb) > cutoff}
+    assert 0 < len(expected) < len(ALL_NOTEBOOKS)
+    assert _rel(found, nb_root) == expected
 
 
 @pytest.mark.parametrize("contents_filter, expected", [
@@ -186,6 +208,87 @@ def test_get_rexp_filter_callables():
     line_fn = lambda line: 'x' in line
     assert nb_searcher._get_rexp_filter(line_fn,
                                         nb_searcher.SEARCH_CONTENTS) is line_fn
+
+
+def test_get_rexp_filter_not_called():
+    """ the number of arguments comes from the signature, not a test call """
+    calls = []
+
+    def two_args(path, name):
+        calls.append((path, name))
+        return True
+
+    def one_arg(full_path):
+        calls.append(full_path)
+        return True
+
+    assert nb_searcher._get_rexp_filter(two_args) is two_args
+    wrapped = nb_searcher._get_rexp_filter(one_arg)
+    assert nb_searcher._get_rexp_filter(one_arg,
+                                        nb_searcher.SEARCH_CONTENTS) is one_arg
+    assert calls == []
+    assert wrapped('a', 'b')
+    assert calls == ['a/b']
+
+
+def test_get_rexp_filter_internal_type_error():
+    """ a TypeError inside a 2 argument filter isn't mistaken for 1 argument """
+    def bad_filter(path, name):
+        return name + 1
+
+    assert nb_searcher._get_rexp_filter(bad_filter) is bad_filter
+
+
+def test_get_rexp_filter_other_callables():
+    import functools
+
+    def has_ext(path, name, ext):
+        return name.endswith(ext)
+
+    notebooks = functools.partial(has_ext, ext='.ipynb')
+    assert nb_searcher._get_rexp_filter(notebooks) is notebooks
+
+    class FullPathFilter:
+        def __call__(self, full_path):
+            return 'x' in full_path
+
+    adapted = nb_searcher._get_rexp_filter(FullPathFilter())
+    assert adapted('a', 'x') and not adapted('a', 'b')
+
+    # optional and variable arguments
+    flexible = lambda *args: True
+    assert nb_searcher._get_rexp_filter(flexible) is flexible
+    with_default = lambda full_path, extra=None: True
+    assert nb_searcher._get_rexp_filter(with_default) is with_default
+
+
+class NoSignature:
+    """ a callable whose signature can't be read (like some builtins) """
+    __signature__ = "not a signature"
+
+    def __init__(self, func):
+        self.func = func
+
+    def __call__(self, *args):
+        return self.func(*args)
+
+
+def test_get_rexp_filter_no_signature():
+    """ without a signature, fall back to a test call """
+    two_args = NoSignature(lambda path, name: name == 'x')
+    assert nb_searcher._get_rexp_filter(two_args) is two_args
+
+    one_arg = nb_searcher._get_rexp_filter(NoSignature(lambda full: full == 'a/x'))
+    assert one_arg('a', 'x') and not one_arg('b', 'x')
+
+    line_fn = NoSignature(lambda line: 'x' in line)
+    assert nb_searcher._get_rexp_filter(line_fn,
+                                        nb_searcher.SEARCH_CONTENTS) is line_fn
+    with pytest.raises(Exception, match="path/filname pair"):
+        nb_searcher._get_rexp_filter(NoSignature(lambda: True))
+    with pytest.raises(Exception, match="single string"):
+        nb_searcher._get_rexp_filter(NoSignature(lambda a, b: True),
+                                     nb_searcher.SEARCH_CONTENTS)
 
 
 def test_get_rexp_filter_errors():

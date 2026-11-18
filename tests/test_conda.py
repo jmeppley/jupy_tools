@@ -225,22 +225,48 @@ def test_activate_missing_env(clean_conda, tmp_path):
 
 
 def test_activate_adds_conda_bin_dir(clean_conda, tmp_path):
+    """ conda's own bin dir is a fall back after the env's bin dir """
     env = make_fake_env(tmp_path, 'env1')
     conda.CONDA_BIN_DIR = '/opt/conda/bin'
     conda.activate(str(env))
-    path = os.environ['PATH'].split(":")
-    assert path[0] == f"{env}/bin"
-    assert len(path) == 4
+    assert os.environ['PATH'] == f"{env}/bin:/opt/conda/bin:/usr/bin:/bin"
+
+    # deactivating removes it again
+    conda.deactivate()
+    assert '/opt/conda/bin' not in os.environ['PATH'].split(":")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "CONDA_BIN_DIR is already a bin dir, but activate() appends another "
-    "/bin to it"))
-def test_activate_conda_bin_dir_path(clean_conda, tmp_path):
+def test_activate_finds_conda_bin_programs(clean_conda, tmp_path, monkeypatch):
+    """
+    Programs in the env come first, then programs next to the conda
+    executable (CONDA_BIN_DIR comes from `which conda`)
+    """
+    import shutil
+    base_bin = tmp_path / 'miniconda3' / 'bin'
+    base_bin.mkdir(parents=True)
     env = make_fake_env(tmp_path, 'env1')
-    conda.CONDA_BIN_DIR = '/opt/conda/bin'
+    for path in [base_bin / 'conda', base_bin / 'only_in_base',
+                 base_bin / 'in_both', env / 'bin' / 'in_both']:
+        path.write_text("#!/bin/sh\n")
+        path.chmod(0o755)
+
+    monkeypatch.setattr(subprocess, 'check_output',
+                        lambda cmd: f"{base_bin}/conda\n".encode())
+    conda.CONDA_BIN_DIR = conda.get_conda_bin_path()
+    assert conda.CONDA_BIN_DIR == str(base_bin)
+
     conda.activate(str(env))
-    assert os.environ['PATH'].split(":")[1] == '/opt/conda/bin'
+    assert shutil.which('only_in_base') == str(base_bin / 'only_in_base')
+    assert shutil.which('in_both') == str(env / 'bin' / 'in_both')
+    assert shutil.which('conda') == str(base_bin / 'conda')
+
+
+def test_activate_relative_conda_bin_dir(clean_conda, tmp_path, monkeypatch):
+    env = make_fake_env(tmp_path, 'env1')
+    monkeypatch.chdir(tmp_path)
+    conda.CONDA_BIN_DIR = 'conda/bin'
+    conda.activate(str(env))
+    assert os.environ['PATH'].split(":")[1] == f"{tmp_path}/conda/bin"
 
 
 ###

@@ -91,8 +91,8 @@ def test_merge_clusters():
     new = cdhit.parse_cdhit_clusters(io.StringIO(SECONDARY_CLUSTERS))
     cdhit.merge_clusters(merged, new)
 
-    # clusters with a known rep are added to that cluster
-    assert {'a', 'b', 'd', 'e'} == set(merged.clusters[0])
+    # clusters with a known rep are added to that cluster (once each)
+    assert merged.clusters[0] == ['a', 'b', 'd', 'e']
     assert merged.clusters[1] == ['c']
     # clusters with a new rep are appended
     assert merged.clusters[2] == ['f', 'g']
@@ -101,16 +101,57 @@ def test_merge_clusters():
         assert gene in merged.lookup
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "merge_clusters stores rep names in the lookup, but parse_cdhit_clusters "
-    "stores cluster indices, so merged lookups are a mix of both"))
+def _check_lookup(clusters):
+    """ lookup maps every gene to the index of the cluster it's in """
+    assert set(clusters.lookup) == {g for genes in clusters.clusters
+                                    for g in genes}
+    for i, genes in enumerate(clusters.clusters):
+        assert len(genes) == len(set(genes))
+        for gene in genes:
+            assert clusters.lookup[gene] == i
+
+
 def test_merge_clusters_lookup_is_consistent():
     merged = cdhit.parse_cdhit_clusters(io.StringIO(PRIMARY_CLUSTERS))
     new = cdhit.parse_cdhit_clusters(io.StringIO(SECONDARY_CLUSTERS))
     cdhit.merge_clusters(merged, new)
-    for i, genes in enumerate(merged.clusters):
-        for gene in genes:
-            assert merged.lookup[gene] == i
+    _check_lookup(merged)
+    assert merged.lookup['d'] == 0
+    assert merged.lookup['g'] == 2
+
+
+# a third clustering: d (merged into a's cluster) and g (in f's) are reps
+THIRD_CLUSTERS = """>Cluster 0
+0\t250aa, >d... *
+1\t200aa, >h... at 70.00%
+>Cluster 1
+0\t100aa, >g... *
+1\t90aa, >i... at 70.00%
+>Cluster 2
+0\t50aa, >j... *
+"""
+
+
+def test_merge_three_clusterings():
+    """ a merged lookup can be used for the next merge """
+    merged = cdhit.parse_cdhit_clusters(io.StringIO(PRIMARY_CLUSTERS))
+    for text in [SECONDARY_CLUSTERS, THIRD_CLUSTERS]:
+        cdhit.merge_clusters(merged, cdhit.parse_cdhit_clusters(io.StringIO(text)))
+    assert merged.clusters == [['a', 'b', 'd', 'e', 'h'], ['c'],
+                               ['f', 'g', 'i'], ['j']]
+    # clusters keep their original reps
+    assert merged.reps == ['a', 'c', 'f', 'j']
+    _check_lookup(merged)
+
+
+def test_merge_clusters_copies_new_clusters():
+    """ merged clusters don't share lists with the merged-in data """
+    merged = cdhit.parse_cdhit_clusters(io.StringIO(PRIMARY_CLUSTERS))
+    new = cdhit.parse_cdhit_clusters(io.StringIO(SECONDARY_CLUSTERS))
+    cdhit.merge_clusters(merged, new)
+    cdhit.merge_clusters(merged, cdhit.parse_cdhit_clusters(
+        io.StringIO(THIRD_CLUSTERS)))
+    assert new.clusters == [['a', 'd', 'e'], ['f', 'g']]
 
 
 def test_parse_multiple_clusters(cluster_files, capsys):
@@ -120,6 +161,15 @@ def test_parse_multiple_clusters(cluster_files, capsys):
     out = capsys.readouterr().out
     assert "read 2 clusters from " + cluster_files[0] in out
     assert "read 2 clusters from " + cluster_files[1] in out
+
+
+def test_parse_multiple_clusters_three(cluster_files, tmp_path, capsys):
+    third = tmp_path / 'third.clstr'
+    third.write_text(THIRD_CLUSTERS)
+    merged = cdhit.parse_multiple_clusters(cluster_files + [str(third)])
+    assert merged.reps == ['a', 'c', 'f', 'j']
+    _check_lookup(merged)
+    assert "read 3 clusters from " + str(third) in capsys.readouterr().out
 
 
 def test_parse_multiple_clusters_single(cluster_files, capsys):
