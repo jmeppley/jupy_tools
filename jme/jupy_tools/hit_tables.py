@@ -623,7 +623,7 @@ def agg_hit_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False,
     agg_dict = {'matches':sum_first_N,
                 'mlen':sum_first_N}
 
-    if score in non_ovl_hits.columns:
+    if 'score' in non_ovl_hits.columns:
         agg_dict['score'] = sum_first_N
 
     # also save qlen and hlen if present
