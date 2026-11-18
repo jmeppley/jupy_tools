@@ -164,14 +164,17 @@ def test_check_repeat_size_epsilon(repeat_hits):
     assert found == 1
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "check_repeat_size computes the expected cluster count from "
-    "repeat_size / qlen instead of qlen / repeat_size"))
 def test_check_repeat_size_expected_clusters(repeat_hits):
+    """ 5 copies: the diagonal plus 4 offsets on either side """
     ranks = concatemers.get_ranks(repeat_hits).values
     found, expected = concatemers.check_repeat_size(ranks, 2000, 10000,
                                                     refine=False)
-    assert expected == found
+    assert expected == found == 9
+
+    # a missing offset shows up as found < expected
+    found, expected = concatemers.check_repeat_size(
+        [r for r in ranks if abs(r) != 8000], 2000, 10000, refine=False)
+    assert (found, expected) == (7, 9)
 
 
 ###
@@ -229,11 +232,33 @@ def test_find_cmer_stats_jb_too_few_hits(single_hits):
     assert concatemers.find_cmer_stats_jb(single_hits) is None
 
 
-@pytest.mark.xfail(strict=True, raises=NameError, reason=(
-    "find_cmer_stats_jb uses np.median, but numpy is imported as 'numpy'"))
-def test_find_cmer_stats_jb(repeat_hits):
-    repeat_size = concatemers.find_cmer_stats_jb(repeat_hits)
-    assert repeat_size is not None
+@pytest.mark.parametrize("length, repeat_size", [
+    (10000, 2000), (7000, 3000), (20000, 1500), (12000, 1000),
+])
+def test_find_cmer_stats_jb(length, repeat_size):
+    hits = tandem_self_hits('r', length, repeat_size)
+    assert concatemers.find_cmer_stats_jb(hits, hit_cutoff=500) == repeat_size
+
+
+def test_find_cmer_stats_jb_hit_cutoff(repeat_hits):
+    # with the default cutoff (hits >= 2700bp) there are still 4 hits
+    assert concatemers.find_cmer_stats_jb(repeat_hits) == 2000
+    # too few long hits
+    assert concatemers.find_cmer_stats_jb(repeat_hits, hit_cutoff=7000) is None
+
+
+def test_find_cmer_stats_jb_one_sided(repeat_hits):
+    """ works the same if the table only has hits on one side of the diagonal """
+    one_side = repeat_hits.query('qstart >= hstart')
+    assert concatemers.find_cmer_stats_jb(one_side, hit_cutoff=500) == 2000
+
+
+def test_find_cmer_stats_jb_ignores_reverse_hits(repeat_hits):
+    reverse = pandas.DataFrame([{
+        'query': 'r1', 'hit': 'r1', 'pctid': 99, 'mlen': 5000,
+        'qstart': 3001, 'qend': 8000, 'hstart': 5000, 'hend': 1}])
+    hits = pandas.concat([repeat_hits, reverse])
+    assert concatemers.find_cmer_stats_jb(hits, hit_cutoff=500) == 2000
 
 
 ###
@@ -266,9 +291,12 @@ def test_check_cmer_bad_method(repeat_hits):
         concatemers.check_cmer(repeat_hits, method='magic')
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "check_cmer calls find_cmer_stats_clust when method is JB"))
-def test_check_cmer_jb(repeat_hits, monkeypatch):
+def test_check_cmer_jb(repeat_hits):
+    assert concatemers.check_cmer(repeat_hits, method=concatemers.JB) == \
+        (2000, 5, 1, True, 10000)
+
+
+def test_check_cmer_jb_calls_jb(repeat_hits, monkeypatch):
     monkeypatch.setattr(concatemers, 'find_cmer_stats_jb',
                         lambda qhits, **kw: 2000)
     monkeypatch.setattr(concatemers, 'find_cmer_stats_clust',
@@ -337,16 +365,50 @@ def test_insert_self_hit_bad_format(repeat_hits):
         concatemers.insert_self_hit(repeat_hits, format=hit_tables.BLAST)
 
 
-@pytest.mark.xfail(strict=True, raises=AttributeError, reason=(
-    "insert_self_hit uses DataFrame.append, which was removed in pandas 2"))
 def test_insert_self_hit():
     qhits = pandas.DataFrame([{
-        'query': 'r1', 'qlen': 1000, 'qstart': 1, 'qend': 500, 'strand': '+',
-        'hit': 'r1', 'hlen': 1000, 'hstart': 501, 'hend': 1000,
-        'matches': 500, 'mlen': 500, 'mapqv': 0, 'pctid': 100}])
+        'query': 'r1', 'qlen': 1000, 'qstart': 0, 'qend': 500, 'strand': '+',
+        'hit': 'r1', 'hlen': 1000, 'hstart': 500, 'hend': 1000,
+        'matches': 500, 'mlen': 500, 'mapqv': 0, 'pctid': 100.0}])
     with_self = concatemers.insert_self_hit(qhits)
-    assert with_self.shape[0] == 2
-    assert with_self.loc[-1, 'qend'] == 1000
+    assert with_self.shape == (2, 13)
+    assert list(with_self.columns) == list(qhits.columns)
+    # the original is unchanged
+    assert qhits.shape[0] == 1
+    self_hit = with_self.loc[-1]
+    # PAF positions are 0-based and end-exclusive
+    assert (self_hit.qstart, self_hit.qend) == (0, 1000)
+    assert (self_hit.hstart, self_hit.hend) == (0, 1000)
+    assert self_hit.mlen == self_hit.matches == 1000
+    assert self_hit.pctid == 100
+    assert self_hit.strand == '+'
+    assert with_self.qend.dtype == qhits.qend.dtype
+
+
+def test_insert_self_hit_extra_columns():
+    """ columns not in the table (eg pctid) aren't added, and extras are null """
+    qhits = pandas.DataFrame([{
+        'query': 'r1', 'qlen': 1000, 'qstart': 0, 'qend': 500, 'strand': '+',
+        'hit': 'r1', 'hlen': 1000, 'hstart': 500, 'hend': 1000,
+        'matches': 500, 'mlen': 500, 'mapqv': 0, 'tp': 'P'}])
+    with_self = concatemers.insert_self_hit(qhits)
+    assert 'pctid' not in with_self.columns
+    assert pandas.isna(with_self.loc[-1, 'tp'])
+
+
+def test_build_all_v_all_cmer_table_add_full_hit(sklearn):
+    """ minimap2 style tables (PAF, no full length self hit) """
+    hits = tandem_self_hits('r1', 10000, 2000)
+    hits = hits[hits.qstart != hits.hstart]
+    paf = pandas.DataFrame({
+        'query': hits['query'], 'qlen': 10000, 'qstart': hits.qstart - 1,
+        'qend': hits.qend, 'strand': '+', 'hit': hits.hit, 'hlen': 10000,
+        'hstart': hits.hstart - 1, 'hend': hits.hend, 'matches': hits.mlen,
+        'mlen': hits.mlen, 'mapqv': 60, 'pctid': 100.0})
+    table = concatemers.build_all_v_all_cmer_table(
+        paf, method=concatemers.CLUST, add_full_hit=True)
+    assert list(table.read) == ['r1']
+    assert table.repeat_size.iloc[0] == pytest.approx(2000)
 
 
 ###
@@ -389,13 +451,18 @@ def test_build_all_v_all_cmer_table_filters(sklearn, all_v_all):
     assert list(build(final_filter='whatever').read) == ['r1', 'r2', 'r3']
 
 
-@pytest.mark.xfail(strict=True, raises=KeyError, reason=(
-    "the numeric final_filter looks for a 'score' column, but the table "
-    "column is 'repeat_score'"))
 def test_build_all_v_all_cmer_table_score_filter(sklearn, all_v_all):
     table = concatemers.build_all_v_all_cmer_table(
         all_v_all, method=concatemers.CLUST, final_filter=0.5)
     assert list(table.read) == ['r1', 'r3']
+    # r2 has a score of -1
+    table = concatemers.build_all_v_all_cmer_table(
+        all_v_all, method=concatemers.CLUST, final_filter=-1)
+    assert list(table.read) == ['r1', 'r2', 'r3']
+    # numeric strings (eg from the command line) work too
+    table = concatemers.build_all_v_all_cmer_table(
+        all_v_all, method=concatemers.CLUST, final_filter="1.01")
+    assert len(table) == 0
 
 
 def test_build_all_v_all_cmer_table_no_self_filter(sklearn, all_v_all):

@@ -83,7 +83,7 @@ def test_pseudo_mauve_layout(ax, mag_hits):
 
 
 def test_get_sorted_hits(mag_hits):
-    sorted_hits = mags.get_sorted_hits(mag_hits.copy(), other_cols=['pctid'])
+    sorted_hits = mags.get_sorted_hits(mag_hits, other_cols=['pctid'])
     assert list(sorted_hits.columns) == ['hit', 'hstart', 'hend', 'query',
                                          'qstart', 'qend', 'pctid']
     # h1 is longer, so it's first. h2 starts after h1 + 500bp buffer
@@ -93,22 +93,104 @@ def test_get_sorted_hits(mag_hits):
     assert (h1_hit.hstart, h1_hit.hend) == (101, 400)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "get_sorted_hits says it orders queries by their best hit, but it sorts "
-    "scores ascending and uses the first (worst) hit"))
 def test_get_sorted_hits_query_order(mag_hits):
-    sorted_hits = mags.get_sorted_hits(mag_hits.copy(), other_cols=['pctid'])
+    sorted_hits = mags.get_sorted_hits(mag_hits, other_cols=['pctid'])
     # qB's best hit is on h1 (first hit contig), qA's best is on h2,
     #  so qB should come first in the query genome
     qB = sorted_hits[sorted_hits['query'] == 'qB'].iloc[0]
     assert qB.qstart == 1
+    # qA starts after qB (300bp) + 500bp buffer
+    qA = sorted_hits[sorted_hits['query'] == 'qA']
+    assert set(qA.qstart) == {801}
 
 
-@pytest.mark.xfail(strict=True, raises=TypeError, reason=(
-    "get_sorted_hits defaults other_cols to None, then adds it to a list"))
+@pytest.mark.parametrize("mlen, pctid, best", [
+    # longer alignment wins at similar identity
+    ((400, 50), (95.0, 99.0), 'h2'),
+    ((50, 400), (99.0, 95.0), 'h1'),
+    # aligned length * pctid: 100 * 99 < 120 * 85
+    ((100, 120), (99.0, 85.0), 'h1'),
+])
+def test_get_sorted_hits_best_hit(mlen, pctid, best):
+    """ each query is placed by its hit with the highest mlen * pctid """
+    hits = pandas.DataFrame([
+        # qX hits both contigs, qY only hits h1, qZ only hits h2
+        ['qX', 500, 1, 400, 'h2', 1000, 1, 400, mlen[0], pctid[0]],
+        ['qX', 500, 1, 400, 'h1', 2000, 1, 400, mlen[1], pctid[1]],
+        ['qY', 500, 1, 400, 'h1', 2000, 1, 400, 400, 99.0],
+        ['qZ', 500, 1, 400, 'h2', 1000, 1, 400, 400, 99.0],
+    ], columns=['query', 'qlen', 'qstart', 'qend', 'hit', 'hlen', 'hstart',
+                'hend', 'mlen', 'pctid'])
+    sorted_hits = mags.get_sorted_hits(hits)
+    query_starts = sorted_hits.groupby('query').qstart.min()
+    # h1 is longer, so it's first. Queries placed on h1 come first
+    if best == 'h1':
+        assert query_starts['qX'] < query_starts['qZ']
+    else:
+        assert query_starts['qX'] > query_starts['qY']
+
+
+def test_get_sorted_hits_order_on_contig():
+    """
+    queries whose best hits are on the same hit contig are ordered by where
+    those hits are on it (not by their order in the table)
+    """
+    hits = pandas.DataFrame([
+        # qC's best hit is late on h1, qA's early, qB's in the middle
+        #  (on the reverse strand: position is the smaller coordinate)
+        ['qC', 300, 1, 300, 'h1', 1000, 701, 1000, 300, 99.0],
+        ['qA', 200, 1, 200, 'h1', 1000, 1, 200, 200, 99.0],
+        ['qB', 100, 1, 100, 'h1', 1000, 500, 401, 100, 99.0],
+        # a weaker hit for qA late on h1 doesn't move it
+        ['qA', 200, 1, 50, 'h1', 1000, 901, 950, 50, 80.0],
+        # qD's best hit is on h2 (shorter, so after h1), early on
+        ['qD', 400, 1, 400, 'h2', 500, 1, 400, 400, 99.0],
+    ], columns=['query', 'qlen', 'qstart', 'qend', 'hit', 'hlen', 'hstart',
+                'hend', 'mlen', 'pctid'])
+    sorted_hits = mags.get_sorted_hits(hits)
+    query_starts = sorted_hits.groupby('query').qstart.min()
+    # qA (200) + 500 buffer, then qB (100) + 500, then qC (300) + 500, then qD
+    assert query_starts.to_dict() == {'qA': 1, 'qB': 701, 'qC': 1301,
+                                      'qD': 2101}
+
+
+def test_get_sorted_hits_score_column(mag_hits):
+    """ an existing score column (eg from BLAST) is not used or changed """
+    hits = mag_hits.assign(score=[1000.0, 1.0, 1.0])
+    sorted_hits = mags.get_sorted_hits(hits, other_cols=['score'])
+    assert list(sorted_hits.score) == [1000.0, 1.0, 1.0]
+    qB = sorted_hits[sorted_hits['query'] == 'qB'].iloc[0]
+    assert qB.qstart == 1
+
+
 def test_get_sorted_hits_default_cols(mag_hits):
-    sorted_hits = mags.get_sorted_hits(mag_hits.copy())
-    assert len(sorted_hits.columns) == 6
+    sorted_hits = mags.get_sorted_hits(mag_hits)
+    assert list(sorted_hits.columns) == ['hit', 'hstart', 'hend', 'query',
+                                         'qstart', 'qend']
+    assert len(sorted_hits) == 3
+
+
+def test_get_sorted_hits_does_not_modify_input(mag_hits):
+    original = mag_hits.copy()
+    mags.get_sorted_hits(mag_hits, other_cols=['pctid'])
+    pandas.testing.assert_frame_equal(mag_hits, original)
+
+
+def test_get_sorted_hits_slice():
+    """ a filtered slice of a bigger table works without a pandas warning """
+    import warnings
+    hits = pandas.DataFrame([
+        ['qA', 400, 1, 400, 'h1', 1000, 51, 450, 400, 99.0],
+        ['qB', 300, 1, 300, 'h1', 1000, 501, 800, 300, 95.0],
+        ['qC', 300, 1, 300, 'h1', 1000, 1, 300, 300, 50.0],
+    ], columns=['query', 'qlen', 'qstart', 'qend', 'hit', 'hlen', 'hstart',
+                'hend', 'mlen', 'pctid'])
+    good_hits = hits[hits.pctid > 90]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        sorted_hits = mags.get_sorted_hits(good_hits, other_cols=['pctid'])
+    assert list(sorted_hits['query']) == ['qA', 'qB']
+    assert list(good_hits.columns) == list(hits.columns)
 
 
 def test_sorted_dot_plot(ax, mag_hits):
@@ -122,9 +204,38 @@ def test_sorted_dot_plot_no_ax(close_figures, mag_hits):
     assert len(plt.gca().get_lines()) == 3
 
 
-@pytest.mark.xfail(strict=True, raises=NameError, reason=(
-    "sorted_dot_plot refers to an undefined 'hits' variable when min_pctid "
-    "is None or negative"))
+def _line_colors(ax):
+    return [tuple(line.get_color()) for line in ax.get_lines()]
+
+
 def test_sorted_dot_plot_default_min_pctid(ax, mag_hits):
-    mags.sorted_dot_plot(mag_hits.copy(), ax=ax)
-    assert len(ax.get_lines()) == 3
+    """ by default, the color scale goes from the lowest pctid (80) to 100 """
+    from matplotlib import pyplot as plt
+    cmap = plt.get_cmap('cool')
+    mags.sorted_dot_plot(mag_hits, ax=ax)
+    # lines are drawn in the order of the hits (pctid 80, 99, 95)
+    assert _line_colors(ax) == [cmap(0.0), cmap(19 / 20), cmap(15 / 20)]
+
+
+def test_sorted_dot_plot_min_pctid(ax, mag_hits):
+    from matplotlib import pyplot as plt
+    cmap = plt.get_cmap('cool')
+    # a set bottom for the scale
+    mags.sorted_dot_plot(mag_hits, ax=ax, min_pctid=60)
+    assert _line_colors(ax)[0] == cmap(20 / 40)
+    # negative: 20 below the lowest pctid (80)
+    ax.clear()
+    mags.sorted_dot_plot(mag_hits, ax=ax, min_pctid=-20)
+    assert _line_colors(ax) == [cmap(20 / 40), cmap(39 / 40), cmap(35 / 40)]
+
+
+def test_sorted_dot_plot_all_identical(ax, mag_hits):
+    """ if every hit is 100%, the lines get the top color (not NaN) """
+    from matplotlib import pyplot as plt
+    hits = mag_hits.assign(pctid=100.0)
+    mags.sorted_dot_plot(hits, ax=ax)
+    assert _line_colors(ax) == [plt.get_cmap('cool')(1.0)] * 3
+    # the same for an explicit min_pctid of 100
+    ax.clear()
+    mags.sorted_dot_plot(hits, ax=ax, min_pctid=100)
+    assert _line_colors(ax) == [plt.get_cmap('cool')(1.0)] * 3

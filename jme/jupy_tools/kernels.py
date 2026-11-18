@@ -4,6 +4,7 @@ Class that will inspect a jupyter server (via the API) and the local running pro
 """
 
 import datetime
+import getpass
 import os
 import re
 import subprocess
@@ -32,7 +33,7 @@ def get_cpu_mem_posns_in_top():
     top_header = decode(subprocess.check_output(TOP_HEADER_CMD, shell=True)).rstrip()
 
     # this only works for right justified (numeric?) fields
-    return {key:re.search(f"\s+{key}", top_header).span() for key in TOP_KEYS}
+    return {key:re.search(rf"\s+{key}", top_header).span() for key in TOP_KEYS}
   
 
 def get_top_kernels_from_top(user, sort_key, N):
@@ -48,8 +49,19 @@ class KernelFinder():
     def __init__(self, 
                  jupyter_url,
                  jupyter_token,
-                 notebook_root=os.environ['HOME'],
-                 username=os.getlogin()):
+                 notebook_root=None,
+                 username=None):
+        """
+        params:
+         * jupyter_url, jupyter_token: for the jupyter server API
+         * notebook_root: the server's notebook dir (default: home dir)
+         * username: the user running the kernels (default: current user)
+        """
+        # (defaults are looked up here, not at import time)
+        if notebook_root is None:
+            notebook_root = os.path.expanduser('~')
+        if username is None:
+            username = getpass.getuser()
         self.url = jupyter_url
         self.token = jupyter_token
         self.user = username

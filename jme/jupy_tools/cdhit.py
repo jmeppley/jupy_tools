@@ -65,6 +65,14 @@ def parse_multiple_clusters(cluster_files):
 
 
 def merge_clusters(clusters, new_data):
+    """
+    Merge new_data into clusters (both CdhitClusters from
+    parse_cdhit_clusters). clusters is modified in place.
+
+    If a new cluster's rep is already in an existing cluster, its genes are
+    added to that cluster (and it keeps its rep). Otherwise it's added as a
+    new cluster. Either way, lookup maps each gene to its cluster's index.
+    """
     for genes, rep in zip(*new_data[:2]):
         # is the rep already part of a cluster?
         try:
@@ -72,13 +80,15 @@ def merge_clusters(clusters, new_data):
         except KeyError as e:
             # no? add cluster to list
             cluster = len(clusters[0])
-            clusters[0].append(genes)
+            clusters[0].append(list(genes))
             clusters[1].append(rep)
         else:
-            # yes? then all genes go in that cluster
-            clusters[0][cluster].extend(genes)
-            rep = clusters[1][cluster]
+            # yes? then all genes go in that cluster (skip any already there,
+            #  like the rep)
+            members = clusters[0][cluster]
+            known = set(members)
+            members.extend(g for g in genes if g not in known)
 
-        # either way, add entry to rep lookup
+        # either way, add genes to the lookup
         for gene in genes:
-            clusters[2][gene] = rep
+            clusters[2][gene] = cluster
