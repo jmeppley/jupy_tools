@@ -306,8 +306,52 @@ def test_parse_lastal():
     assert list(df.evalue) == [2.5e-40, 3e-15]
     # end positions computed from start + alignment length
     assert list(df.hend) == [109, 549]
-    assert list(df.qend) == [101, 351]
     assert list(df.qsmult) == [1, -1]
+    # the - strand alignment starts at 400 on the reverse strand of a 1000bp
+    #  query: that's 599 on the forward strand, going back to 550
+    assert list(df.qstart) == [0, 599]
+    assert list(df.qend) == [101, 550]
+
+
+def test_parse_lastal_reverse_hit_strand():
+    """ the hit (reference) strand can be - too """
+    text = "90\th1\t100\t50\t-\t2000\tq1\t10\t50\t+\t1000\t50\tEG2=1\tE=1\n"
+    df = hit_tables.parse_blast_m8(_stream(text), format=hit_tables.LASTAL)
+    assert (df.hstart[0], df.hend[0]) == (1899, 1850)
+    assert (df.qstart[0], df.qend[0]) == (10, 59)
+
+
+def test_parse_lastal_reverse_hit_strand_polars(pl, tmp_path):
+    path = _write(tmp_path, "90\th1\t100\t50\t-\t2000\tq1\t10\t50\t+\t1000\t50\tEG2=1\tE=1\n")
+    df = hit_tables.parse_blast_m8(path, format=hit_tables.LASTAL,
+                                   use_polars=True)
+    assert df.select('hstart', 'hend', 'qstart', 'qend').row(0) == \
+        (1899, 1850, 10, 59)
+
+
+@pytest.mark.parametrize('text', [LASTAL_TEXT, LASTAL_FRAGMENTS],
+                         ids=['lastal_gapped', 'lastal'])
+def test_parse_lastal_matches_overlap_ranges(text):
+    """ parsed positions are the forward strand ranges used for overlaps """
+    df = hit_tables.parse_blast_m8(_stream(text), format=hit_tables.LASTAL)
+    lines = [l for l in text.splitlines() if not l.startswith("#")]
+    for (_, row), line in zip(df.iterrows(), lines):
+        data = hit_tables.lastal_rexp.search(line).groupdict()
+        for pref in ['q', 'h']:
+            start, end = hit_tables._lastal_forward_range(
+                *[data[pref + k] for k in ['start', 'mlen', 'strand', 'len']])
+            # parsed ends are inclusive
+            assert sorted([row[pref + 'start'], row[pref + 'end']]) == \
+                [start, end - 1]
+
+
+def test_agg_hit_table_lastal_extent():
+    """ keep_extent gives forward strand positions for - strand hits """
+    agg = hit_tables.agg_hit_table(_stream(LASTAL_FRAGMENTS),
+                                   format=hit_tables.LASTAL, keep_extent=True)
+    q1h2 = agg.set_index(['query', 'hit']).loc[('q1', 'h2')]
+    # reverse strand start 600, size 200 in a 1000bp query: 200-399
+    assert (q1h2.qstart, q1h2.qend, q1h2.qmlen) == (200, 399, 200)
 
 
 def test_parse_blast_pair_overlap_buffer():
@@ -496,6 +540,8 @@ def test_parse_lastal_polars(pl, tmp_path):
     assert df['hend'].to_list() == list(pd_df.hend)
     assert df['qend'].to_list() == list(pd_df.qend)
     assert df['qsmult'].to_list() == list(pd_df.qsmult)
+    assert df['qstart'].to_list() == list(pd_df.qstart)
+    assert df['hstart'].to_list() == list(pd_df.hstart)
     assert df['evalue'].to_list() == list(pd_df.evalue)
 
 

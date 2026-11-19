@@ -303,9 +303,16 @@ def parse_blast_m8(
     if format == LASTAL:
         hits['qsmult'] = [1 if qs == '+' else -1 
                           for qs in hits.qstrand]
-        hits = \
-            hits.eval('hend = hstart + hmlen - 1') \
-                .eval('qend = qstart + ((qmlen - 1) * qsmult)')
+        # positions are 0-based. lastal gives "-" strand starts on the reverse
+        #  strand, so convert them to the forward strand. Like BLAST tables,
+        #  start > end for "-" strand alignments.
+        for pref in ['q', 'h']:
+            reverse = hits[pref + 'strand'] == '-'
+            start = hits[pref + 'start'].where(
+                ~reverse, hits[pref + 'len'] - 1 - hits[pref + 'start'])
+            hits[pref + 'start'] = start
+            hits[pref + 'end'] = start + \
+                (hits[pref + 'mlen'] - 1) * numpy.where(reverse, -1, 1)
         hits['mlen'] = [computeLastHitValues(blocks)
                         for blocks in hits.match_string]
         hits['evalue'] = [float(re.sub('E=','',str(e)))
@@ -378,15 +385,24 @@ def _parse_blast_m8_polars(
               .cast(pl.Int8)
               .alias('qsmult')
         )
+        # positions are 0-based. lastal gives "-" strand starts on the reverse
+        #  strand, so convert them to the forward strand. Like BLAST tables,
+        #  start > end for "-" strand alignments.
+        hits = hits.with_columns(
+            pl.when(pl.col(f'{pref}strand') == '-')
+              .then(pl.col(f'{pref}len') - 1 - pl.col(f'{pref}start'))
+              .otherwise(pl.col(f'{pref}start'))
+              .alias(f'{pref}start')
+            for pref in ['q', 'h']
+        )
         hits = hits.with_columns(
             (
-                pl.col('hstart') + pl.col('hmlen') - 1
-            ).alias('hend'),
-            (
-                pl.col('qstart') + (
-                    pl.col('qmlen') -1
-                ) * pl.col('qsmult')
-            ).alias('qend'),
+                pl.col(f'{pref}start') + (pl.col(f'{pref}mlen') - 1) *
+                pl.when(pl.col(f'{pref}strand') == '-').then(-1).otherwise(1)
+            ).alias(f'{pref}end')
+            for pref in ['q', 'h']
+        )
+        hits = hits.with_columns(
             pl.col('match_string').map_elements(
                 computeLastHitValues,
                 return_dtype=pl.UInt32,
