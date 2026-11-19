@@ -447,3 +447,63 @@ def test_save_fig_to_pdf(tmp_path, close_figures):
     utils.save_fig_to_pdf(fig, str(pdf_path))
     assert pdf_path.exists()
     assert pdf_path.read_bytes().startswith(b"%PDF")
+
+
+def _pdf_pages(path):
+    import re
+    return len(re.findall(rb"/Type\s*/Page[^s]", path.read_bytes()))
+
+
+def _simple_fig():
+    from matplotlib import pyplot as plt
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1])
+    return fig
+
+
+def test_save_fig_to_pdf_closes_fig(tmp_path, close_figures):
+    from matplotlib import pyplot as plt
+    fig = _simple_fig()
+    other = _simple_fig()   # now the "current" figure
+    utils.save_fig_to_pdf(fig, str(tmp_path / "fig.pdf"))
+    assert _pdf_pages(tmp_path / "fig.pdf") == 1
+    # the saved figure is closed, not just the current one
+    assert not plt.fignum_exists(fig.number)
+    assert plt.fignum_exists(other.number)
+
+    utils.save_fig_to_pdf(other, str(tmp_path / "fig2.pdf"), close=False)
+    assert plt.fignum_exists(other.number)
+
+
+def test_save_fig_to_pdf_multiple(tmp_path, close_figures):
+    from matplotlib import pyplot as plt
+    figs = [_simple_fig() for _ in range(3)]
+    utils.save_fig_to_pdf(figs, str(tmp_path / "list.pdf"))
+    assert _pdf_pages(tmp_path / "list.pdf") == 3
+    assert not any(plt.fignum_exists(f.number) for f in figs)
+
+    # a generator: each figure is closed before the next one is made
+    open_counts = []
+
+    def gen():
+        for _ in range(4):
+            open_counts.append(len(plt.get_fignums()))
+            yield _simple_fig()
+    utils.save_fig_to_pdf(gen(), str(tmp_path / "gen.pdf"))
+    assert _pdf_pages(tmp_path / "gen.pdf") == 4
+    assert open_counts == [0, 0, 0, 0]
+
+
+def test_save_fig_to_pdf_wrapped_figs(tmp_path, close_figures):
+    """ objects holding a figure in .figure or .fig (eg ClusterGrid) """
+    from types import SimpleNamespace
+    wrapped = [SimpleNamespace(figure=_simple_fig()),
+               SimpleNamespace(fig=_simple_fig())]
+    utils.save_fig_to_pdf(wrapped[0], str(tmp_path / "one.pdf"))
+    assert _pdf_pages(tmp_path / "one.pdf") == 1
+    utils.save_fig_to_pdf(wrapped, str(tmp_path / "two.pdf"),
+                          bbox_inches=None)
+    assert _pdf_pages(tmp_path / "two.pdf") == 2
+
+    with pytest.raises(TypeError):
+        utils.save_fig_to_pdf(["not a figure"], str(tmp_path / "bad.pdf"))
