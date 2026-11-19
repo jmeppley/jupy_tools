@@ -26,52 +26,56 @@ VEIMEs, hosts or modules.
 Example::
 
     import polars as pl
-    from jme.jupy_tools.experimental import metag_heatmaps as mh
+    from jme.jupy_tools.experimental import metag_heatmaps
 
     # long table of hits: sample, genome, cov
     hits = pl.read_csv('phage.covs.tsv', separator='\\t')
-    hits = mh.normalize_coverage(hits, read_counts)      # -> cov_per_bn_reads
-    md = pl.read_csv('aloha.sample.md.tsv', separator='\\t')  # sample, depth,
-                                                         #  month, filter, ...
-    md = md.filter(pl.col('cruise') < 298)               # eg public cruises
+    hits = metag_heatmaps.normalize_coverage(hits, read_counts)
+    # -> adds cov_per_bn_reads
+
+    # sample metadata: sample, depth, month, filter, ...
+    md = pl.read_csv('aloha.sample.md.tsv', separator='\\t')
+    md = md.filter(pl.col('cruise') < 298)  # eg public cruises
 
     # top 15 cellular + top 35 viral genomes (union, in rank order)
-    genomes = mh.top_genomes(hits, {'00-20': 15, '20-02': 35},
-                             group_col='filter', samples_md=md)
+    genomes = metag_heatmaps.top_genomes(
+        hits, {'00-20': 15, '20-02': 35}, group_col='filter', samples_md=md)
 
     # mean over ALL samples in each depth (absent = 0), split by size fraction
     #  with the cellular fraction negated
-    by_depth = mh.aggregate(hits, md, 'depth', genomes=genomes,
-                            split_col='filter', split_negative='00-20',
-                            split_order=['20-02', '00-20'])
-    by_month = mh.aggregate(hits, md, 'month', genomes=genomes,
-                            split_col='filter', split_negative='00-20',
-                            split_order=['20-02', '00-20'],
-                            order=range(1, 13))
+    split = dict(split_col='filter', split_negative='00-20',
+                 split_order=['20-02', '00-20'])
+    by_depth = metag_heatmaps.aggregate(hits, md, 'depth', genomes=genomes,
+                                        **split)
+    by_month = metag_heatmaps.aggregate(hits, md, 'month', genomes=genomes,
+                                        order=range(1, 13), **split)
 
     # TARA: parse sample names to get depth classes
-    tara_md = mh.parse_tara_samples(tara_hits['sample'].unique())
-    by_tara = mh.aggregate(tara_hits, tara_md, 'depth', genomes=genomes,
-                           order=list(mh.TARA_DEPTHS))
+    tara_md = metag_heatmaps.parse_tara_samples(tara_hits['sample'].unique())
+    by_tara = metag_heatmaps.aggregate(
+        tara_hits, tara_md, 'depth', genomes=genomes,
+        order=list(metag_heatmaps.TARA_DEPTHS))
 
     # optional log scale (keeps sign, 0 stays 0)
-    (by_depth, by_month, by_tara), zero_val = mh.signed_log(
+    (by_depth, by_month, by_tara), zero_val = metag_heatmaps.signed_log(
         [by_depth, by_month, by_tara])
 
-    hm = mh.abundance_heatmap(
-        [mh.Panel(by_depth, 'Depth (m)\\nALOHA'),
-         mh.Panel(by_month, 'Month\\nALOHA', row_labels=mh.MONTHS),
-         mh.Panel(by_tara, 'Depth\\nTARA',
-                  row_labels=list(mh.TARA_DEPTHS.values()))],
-        strips=[mh.MetadataStrip('Sequence Type', type_colors_fn),
-                mh.MetadataStrip('Mapped Host',
-                                 mh.color_fn_from_dict(host_colors,
-                                                       key_fn=known_hosts.get,
-                                                       other='#808080'))],
+    host_color_fn = metag_heatmaps.color_fn_from_dict(
+        host_colors, key_fn=known_hosts.get, other='#808080')
+    hm = metag_heatmaps.abundance_heatmap(
+        [metag_heatmaps.Panel(by_depth, 'Depth (m)\\nALOHA'),
+         metag_heatmaps.Panel(by_month, 'Month\\nALOHA',
+                              row_labels=metag_heatmaps.MONTHS),
+         metag_heatmaps.Panel(
+             by_tara, 'Depth\\nTARA',
+             row_labels=list(metag_heatmaps.TARA_DEPTHS.values()))],
+        strips=[metag_heatmaps.MetadataStrip('Sequence Type', type_colors_fn),
+                metag_heatmaps.MetadataStrip('Mapped Host', host_color_fn)],
         log_zero_val=zero_val,
-        fraction_labels=('particles < 0.2 \\u03bcm', 'particles > 0.2 \\u03bcm'),
+        fraction_labels=('particles < 0.2 \\u03bcm',
+                         'particles > 0.2 \\u03bcm'),
     )
-    mh.save_pdf(hm.fig, 'Figure.4.pdf')
+    metag_heatmaps.save_pdf(hm.fig, 'Figure.4.pdf')
 
     hm.genome_order    # genomes in dendrogram order
     hm.axes['panel_0'] # matplotlib axes for further tweaks
