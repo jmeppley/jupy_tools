@@ -293,6 +293,8 @@ def parse_blast_m8(
                 usecols=use_cols,
                 names=column_names,
                 skiprows=skiprows,
+                # the default C parser can be off by 1 ULP (eg 1e-50 -> 9.999e-51)
+                float_precision="round_trip",
             )
 
     if hits.shape[0] == 0:
