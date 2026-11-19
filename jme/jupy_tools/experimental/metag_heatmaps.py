@@ -11,6 +11,8 @@ VEIME Aloha_abundance_012-016). The typical figure is:
  * panels can be "paired": each genome column is split by a sample category
    (eg size fraction) and one category is made negative so a single diverging
    colormap shows both (viral fraction positive, cellular fraction negative)
+ * panels that aren't split use a sequential colormap (magma_r) by default
+   (see color_scale in abundance_heatmap)
  * optional colored metadata strips (type, module, host, ...) under the panels
  * a "double" color bar with one side per size fraction
  * an optional signed log transform to bring out the low values
@@ -81,7 +83,7 @@ Example::
     hm.genome_order    # genomes in dendrogram order
     hm.axes['panel_0'] # matplotlib axes for further tweaks
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
 import numpy
@@ -101,6 +103,11 @@ ALOHA_CELLULAR = '00-20'
 FRACTION_LABELS = ('particles < 0.2 μm', 'particles > 0.2 μm')
 
 DEFAULT_VALUE_COL = 'cov_per_bn_reads'
+
+# default colormaps for abundance_heatmap(color_scale=...)
+DEFAULT_DIVERGING_CMAP = 'PuOr'
+# light at 0, since most cells are 0 or close to it
+DEFAULT_SEQUENTIAL_CMAP = 'magma_r'
 
 
 ##########
@@ -730,11 +737,12 @@ def _half_cmap(cmap, sign, n=256):
                           name=f"{cmap.name}_{sign}")
 
 
-def abundance_heatmap(panels, strips=(), cmap='PuOr', vmax=None,
+def abundance_heatmap(panels, strips=(), cmap=None, vmax=None,
                       genome_order=None, metric='correlation',
                       method='average', dendrogram=True,
                       label_color_fn=None, label_rename_fn=None,
-                      genome_labels=True, colorbar='auto', sign='auto',
+                      genome_labels=True, colorbar='auto',
+                      color_scale='auto',
                       colorbar_label='Mean coverage\nper billion reads',
                       log_zero_val=None, fraction_labels=FRACTION_LABELS,
                       panel_letters=True, separators=True,
@@ -748,8 +756,9 @@ def abundance_heatmap(panels, strips=(), cmap='PuOr', vmax=None,
             genome i spans x = [i, i+1]; paired panels split that space
             into one sub-column per fraction.
     strips: list of MetadataStrip drawn under the panels
-    cmap: diverging colormap (color scale is -vmax..vmax, or just one half
-          of it, see sign)
+    cmap: colormap. Default: DEFAULT_DIVERGING_CMAP ('PuOr') for a
+          diverging color_scale, DEFAULT_SEQUENTIAL_CMAP ('magma_r') for a
+          sequential one.
     vmax: default: max |value| over all panels
     genome_order: use this order instead of clustering
     metric, method: for scipy clustering of genomes
@@ -757,10 +766,17 @@ def abundance_heatmap(panels, strips=(), cmap='PuOr', vmax=None,
     label_color_fn: genome -> color for the genome labels
     label_rename_fn: genome -> text for the genome labels
     genome_labels: label genomes under the bottom panel
-    sign: 'both', 'positive', 'negative' or 'auto'. With 'positive' only the
-          upper half of cmap is used (0..vmax), and the color bar only shows
-          that half ('negative' likewise uses the lower half). 'auto' picks
-          'both' if any panel is paired or the data has both signs.
+    color_scale: 'sequential', 'diverging' or 'auto' (the default).
+          'sequential': the whole cmap from 0 (light end of the default) to
+              vmax. Data must not have mixed signs; all-negative data (eg a
+              negated cellular fraction) is plotted as absolute values.
+          'diverging': 0 is the middle of cmap, the scale is -vmax..vmax.
+              If no panel is paired and all values have one sign, only that
+              half of cmap is used (and shown in the color bar), so a
+              single size fraction looks like its side of a paired figure.
+          'auto': 'diverging' if any panel is paired (ie made with
+              aggregate(..., split_col=...)) or the data has both signs,
+              else 'sequential'.
     colorbar: 'double', 'single', None or 'auto' (double if any panel is
               paired, else single)
     log_zero_val: zero_val from signed_log, to label the color bar in real
@@ -795,17 +811,31 @@ def abundance_heatmap(panels, strips=(), cmap='PuOr', vmax=None,
                    for p in panels)
         if not vmax > 0:
             vmax = 1.0
-    if sign == 'auto':
-        sign = _data_sign(panels)
-    if sign == 'both':
-        norm = Normalize(-vmax, vmax)
-    elif sign in ('positive', 'negative'):
-        cmap = _half_cmap(cmap, sign)
-        norm = Normalize(0, vmax) if sign == 'positive' else \
-            Normalize(-vmax, 0)
+    # sign: which part of a signed scale the data needs: 'both',
+    #  'positive' or 'negative'
+    sign = _data_sign(panels)
+    if color_scale == 'auto':
+        color_scale = 'sequential' if sign != 'both' else 'diverging'
+    if color_scale == 'sequential':
+        if sign == 'both':
+            raise ValueError("A sequential color_scale needs data with one "
+                             "sign (or paired panels need 'diverging')")
+        if sign == 'negative':
+            panels = [replace(p, data=p.data.abs()) for p in panels]
+            sign = 'positive'
+        cmap = DEFAULT_SEQUENTIAL_CMAP if cmap is None else cmap
+        norm = Normalize(0, vmax)
+    elif color_scale == 'diverging':
+        cmap = DEFAULT_DIVERGING_CMAP if cmap is None else cmap
+        if sign == 'both':
+            norm = Normalize(-vmax, vmax)
+        else:
+            cmap = _half_cmap(cmap, sign)
+            norm = Normalize(0, vmax) if sign == 'positive' else \
+                Normalize(-vmax, 0)
     else:
-        raise ValueError(f"sign must be 'both', 'positive', 'negative' or "
-                         f"'auto', not {sign!r}")
+        raise ValueError(f"color_scale must be 'sequential', 'diverging' or "
+                         f"'auto', not {color_scale!r}")
 
     if colorbar == 'auto':
         colorbar = 'double' if any(p.paired for p in panels) else 'single'

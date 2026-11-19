@@ -335,8 +335,8 @@ def _colorbar_tick_values(hm):
             for t in cax.get_yticklabels() if t.get_text()]
 
 
-def test_abundance_heatmap_one_sided(close_figures):
-    """ unpaired, all positive data: only the positive half of the scale """
+def test_color_scale_sequential_default(close_figures):
+    """ unpaired, all positive data: the whole sequential cmap, 0..vmax """
     genomes, by_depth, by_month, by_tara = _synthetic_panels()
     (tara_log,), zero_val = metag_heatmaps.signed_log([by_tara])
     hm = metag_heatmaps.abundance_heatmap([tara_log], log_zero_val=zero_val,
@@ -345,21 +345,85 @@ def test_abundance_heatmap_one_sided(close_figures):
     assert min(ticks) == 0 and max(ticks) > 0
     mesh = hm.axes['panel_0'].collections[0]
     assert mesh.norm.vmin == 0 and mesh.norm.vmax == hm.vmax
-    # zero is drawn white-ish (the middle of PuOr), the max is dark purple
-    assert numpy.allclose(mesh.cmap(0.0), plt_cmap('PuOr')(.5), atol=.02)
-    assert numpy.allclose(mesh.cmap(1.0), plt_cmap('PuOr')(1.0), atol=.02)
+    # the whole default sequential cmap: light at 0, dark at vmax
+    default = plt_cmap(metag_heatmaps.DEFAULT_SEQUENTIAL_CMAP)
+    assert mesh.cmap.name == default.name
+    assert numpy.allclose(mesh.cmap(0.0), default(0.0))
+    assert numpy.allclose(mesh.cmap(1.0), default(1.0))
 
-    # negated data uses the other half
-    hm = metag_heatmaps.abundance_heatmap([-tara_log], log_zero_val=zero_val,
+    # any cmap can be passed
+    hm = metag_heatmaps.abundance_heatmap([tara_log], cmap='viridis',
                                           panel_letters=False)
-    ticks = _colorbar_tick_values(hm)
-    assert max(ticks) == 0 and min(ticks) < 0
+    assert hm.axes['panel_0'].collections[0].cmap.name == 'viridis'
 
-    # sign='both' keeps the full diverging scale
-    hm = metag_heatmaps.abundance_heatmap([tara_log], log_zero_val=zero_val,
-                                          panel_letters=False, sign='both')
+
+def test_color_scale_sequential_negative(close_figures):
+    """ all-negative data is drawn as absolute values """
+    genomes, by_depth, by_month, by_tara = _synthetic_panels()
+    hm = metag_heatmaps.abundance_heatmap([-by_tara], panel_letters=False,
+                                          color_scale='sequential')
+    mesh = hm.axes['panel_0'].collections[0]
+    assert mesh.norm.vmin == 0
+    drawn = numpy.ma.filled(mesh.get_array(), numpy.nan)
+    numpy.testing.assert_allclose(
+        drawn.reshape(by_tara.shape),
+        by_tara.reindex(columns=hm.genome_order).values)
+    assert min(_colorbar_tick_values(hm)) >= 0
+
+
+def test_color_scale_sequential_mixed_signs_fails(close_figures):
+    genomes, by_depth, by_month, by_tara = _synthetic_panels()
+    with pytest.raises(ValueError):
+        metag_heatmaps.abundance_heatmap([by_depth],
+                                         color_scale='sequential')
+    mixed = by_tara.copy()
+    mixed.iloc[0, 0] = -1
+    with pytest.raises(ValueError):
+        metag_heatmaps.abundance_heatmap([mixed], color_scale='sequential')
+    with pytest.raises(ValueError):
+        metag_heatmaps.abundance_heatmap([by_tara], color_scale='both')
+
+
+def test_color_scale_auto_diverging(close_figures):
+    """ paired panels or mixed signs: full diverging scale, PuOr """
+    genomes, by_depth, by_month, by_tara = _synthetic_panels()
+    hm = metag_heatmaps.abundance_heatmap([by_depth, by_tara],
+                                          panel_letters=False)
+    mesh = hm.axes['panel_1'].collections[0]
+    assert mesh.norm.vmin == -hm.vmax and mesh.norm.vmax == hm.vmax
+    assert mesh.cmap.name == metag_heatmaps.DEFAULT_DIVERGING_CMAP
+
+    mixed = by_tara.copy()
+    mixed.iloc[0, 0] = -1
+    hm = metag_heatmaps.abundance_heatmap([mixed], panel_letters=False)
     ticks = _colorbar_tick_values(hm)
     assert min(ticks) < 0 < max(ticks)
+
+
+def test_color_scale_diverging_one_sided(close_figures):
+    """ diverging on single-sign data: only that half of the cmap """
+    genomes, by_depth, by_month, by_tara = _synthetic_panels()
+    (tara_log,), zero_val = metag_heatmaps.signed_log([by_tara])
+    puor = plt_cmap('PuOr')
+    hm = metag_heatmaps.abundance_heatmap(
+        [tara_log], log_zero_val=zero_val, panel_letters=False,
+        color_scale='diverging')
+    ticks = _colorbar_tick_values(hm)
+    assert min(ticks) == 0 and max(ticks) > 0
+    mesh = hm.axes['panel_0'].collections[0]
+    assert mesh.norm.vmin == 0 and mesh.norm.vmax == hm.vmax
+    # zero is drawn white-ish (the middle of PuOr), the max is dark purple
+    assert numpy.allclose(mesh.cmap(0.0), puor(.5), atol=.02)
+    assert numpy.allclose(mesh.cmap(1.0), puor(1.0), atol=.02)
+
+    # negated data uses the other (orange) half
+    hm = metag_heatmaps.abundance_heatmap(
+        [-tara_log], log_zero_val=zero_val, panel_letters=False,
+        color_scale='diverging')
+    ticks = _colorbar_tick_values(hm)
+    assert max(ticks) == 0 and min(ticks) < 0
+    mesh = hm.axes['panel_0'].collections[0]
+    assert numpy.allclose(mesh.cmap(0.0), puor(0.0), atol=.02)
 
 
 def plt_cmap(name):
