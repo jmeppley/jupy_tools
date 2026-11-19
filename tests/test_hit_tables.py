@@ -51,6 +51,13 @@ LASTAL_TEXT = (
     "80\th2\t500\t50\t+\t1500\tq1\t400\t50\t-\t1000\t20,0:3,27\tEG2=1e-10\tE=3e-15\n"
 )
 
+# Two PAF fragments for one query/hit pair. PAF positions are 0-based and
+# end-exclusive, so lengths are end - start
+PAF_PAIR = (
+    "q\t1000\t0\t100\t+\th\t2000\t500\t600\t90\t100\t60\n"
+    "q\t1000\t200\t250\t-\th\t2000\t1000\t1050\t45\t50\t60\n"
+)
+
 # lastal fragments for overlap removal and aggregation
 #   q1/h1: 3 fragments, the 3rd overlaps the 1st
 #   q1/h2: 1 fragment on the - strand: its start (600) is on the reverse
@@ -614,6 +621,40 @@ def test_agg_hit_df_keep_extent():
     _check_small_agg(agg, keep_extent=True)
 
 
+def test_agg_hit_df_max_fragments_lengths_and_extent():
+    """ lengths and extents come from the same (best) fragments as mlen """
+    agg = hit_tables.agg_hit_table(_stream(SMALL_BLAST_PLUS),
+                                   format=hit_tables.BLAST_PLUS,
+                                   max_hit_fragments=1, keep_extent=True)
+    q1h1 = agg.set_index(['query', 'hit']).loc[('q1', 'h1')]
+    # the best fragment is q 1-100, h 1-100
+    assert (q1h1.mlen, q1h1.qmlen, q1h1.hmlen) == (100, 100, 100)
+    assert (q1h1.qstart, q1h1.qend, q1h1.hstart, q1h1.hend) == (1, 100, 1, 100)
+
+    # with 2 fragments, everything covers both
+    agg = hit_tables.agg_hit_table(_stream(SMALL_BLAST_PLUS),
+                                   format=hit_tables.BLAST_PLUS,
+                                   max_hit_fragments=2, keep_extent=True)
+    q1h1 = agg.set_index(['query', 'hit']).loc[('q1', 'h1')]
+    assert (q1h1.mlen, q1h1.qmlen, q1h1.qstart, q1h1.qend) == (150, 150, 1, 250)
+
+
+@pytest.mark.parametrize('fmt, text', [
+    (hit_tables.BLAST_PLUS, SMALL_BLAST_PLUS),
+    (hit_tables.PAF, PAF_PAIR),
+    # no identity, and - strand positions are reversed
+    (hit_tables.LASTAL, LASTAL_FRAGMENTS),
+], ids=['blast+', 'paf', 'lastal'])
+@pytest.mark.parametrize('options', [
+    {}, {'max_hit_fragments': 1}, {'keep_extent': True},
+], ids=['default', 'max_fragments', 'keep_extent'])
+def test_agg_hit_df_input_unchanged(fmt, text, options):
+    hits = hit_tables.parse_blast_m8(_stream(text), format=fmt)
+    original = hits.copy()
+    hit_tables.agg_hit_df(hits, **options)
+    pandas.testing.assert_frame_equal(hits, original)
+
+
 def test_agg_hit_df_max_fragments():
     hits = hit_tables.parse_blast_m8(_stream(SMALL_BLAST_PLUS),
                                      format=hit_tables.BLAST_PLUS,
@@ -647,12 +688,6 @@ def test_agg_hit_df_with_matches_column():
     assert 'mfrac' in agg.columns
 
 
-# Two PAF fragments for one query/hit pair. PAF positions are 0-based and
-# end-exclusive, so lengths are end - start
-PAF_PAIR = (
-    "q\t1000\t0\t100\t+\th\t2000\t500\t600\t90\t100\t60\n"
-    "q\t1000\t200\t250\t-\th\t2000\t1000\t1050\t45\t50\t60\n"
-)
 
 
 @pytest.mark.parametrize('fmt', [hit_tables.PAF, hit_tables.PAF_ALL])
@@ -920,22 +955,13 @@ def test_agg_hit_table_polars_score(pl, tmp_path, max_hit_fragments,
     {},
     {'keep_extent': True},
     {'ovl_buffer': 100},
-], ids=['default', 'keep_extent', 'ovl_buffer'])
+    {'max_hit_fragments': 1},
+    {'max_hit_fragments': 1, 'keep_extent': True},
+], ids=['default', 'keep_extent', 'ovl_buffer', 'max_fragments',
+        'max_fragments_extent'])
 def test_agg_hit_table_pandas_polars_agree(pl, tmp_path, fmt, text, options):
     """ pandas and polars aggregation give the same columns and values """
     _check_pandas_polars_agree(tmp_path, fmt, text, **options)
-
-
-@pytest.mark.xfail(strict=True, reason=(
-    "with max_hit_fragments, agg_hit_df sums matches and mlen over the best "
-    "N fragments, but qmlen, hmlen and keep_extent positions over all of "
-    "them (polars uses only the best N for everything)"))
-@pytest.mark.parametrize('keep_extent', [False, True])
-def test_agg_hit_table_pandas_polars_agree_max_fragments(pl, tmp_path,
-                                                         keep_extent):
-    _check_pandas_polars_agree(tmp_path, hit_tables.BLAST_PLUS,
-                               SMALL_BLAST_PLUS, max_hit_fragments=1,
-                               keep_extent=keep_extent)
 
 
 def _check_pandas_polars_agree(tmp_path, fmt, text, **options):

@@ -2,7 +2,6 @@ import logging
 import re
 import numpy
 import pandas
-from itertools import islice
 from functools import partial
 from contextlib import contextmanager
 from collections import defaultdict
@@ -668,27 +667,30 @@ def agg_hit_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False,
 
     end_offset = 0 if _use_bed_coords(bed_coords, non_ovl_hits.columns) else 1
     has_identity = _has_identity(non_ovl_hits.columns)
+
+    # work on a copy (positions are sorted and columns added below)
+    non_ovl_hits = non_ovl_hits.copy()
         
     # aggregate all hits by hit/query pair
     if has_identity and 'matches' not in non_ovl_hits.columns:
         non_ovl_hits = non_ovl_hits.eval('matches = pctid * mlen / 100')
         
-    # allow for the option to just sum the first N fragments
+    # allow for the option to just use the best N fragments (all of the
+    #  aggregated values, including lengths and extents, come from them)
     if max_hit_fragments > 0:
-        def sum_first_N(S):
-            return sum(islice(S, max_hit_fragments))
-        non_ovl_hits = non_ovl_hits.sort_values(
-            _fragment_rank_col(non_ovl_hits.columns), ascending=False)
-    else:
-        sum_first_N = sum
+        non_ovl_hits = non_ovl_hits \
+            .sort_values(_fragment_rank_col(non_ovl_hits.columns),
+                         ascending=False, kind='stable') \
+            .groupby(['query', 'hit']) \
+            .head(max_hit_fragments)
 
     # addup match ids (if known) and match lengths
-    agg_dict = {'mlen':sum_first_N}
+    agg_dict = {'mlen':sum}
     if has_identity:
-        agg_dict = {'matches':sum_first_N, **agg_dict}
+        agg_dict = {'matches':sum, **agg_dict}
 
     if 'score' in non_ovl_hits.columns:
-        agg_dict['score'] = sum_first_N
+        agg_dict['score'] = sum
 
     # also save qlen and hlen if present
     for col in ['qlen', 'hlen']:
@@ -756,7 +758,8 @@ def agg_hit_df_polars(non_ovl_hits, max_hit_fragments=0, keep_extent=False,
     # allow for the option to just sum the first N fragments
     if max_hit_fragments > 0:
         non_ovl_hits = non_ovl_hits.sort(
-            pl.col(_fragment_rank_col(columns)), descending=True
+            pl.col(_fragment_rank_col(columns)), descending=True,
+            maintain_order=True,  # ties: same choice as pandas
         ).group_by(
             pl.col('query'), pl.col('hit')     # for each query/hit pair
         ).head(
