@@ -1,16 +1,42 @@
 """
-multiprocessing based tools for speeding up  distance calculations between thousands of items
+Calculate pairwise scores between thousands of items with multiprocessing.
 
-includes genome-specific methods, but the core should be generic
+The core (multithreaded_distances, chunkify_data, process_chunk) works with any
+items and any pairwise function. There are also helpers for one specific
+score: the fraction of two genomes' gene length that is in shared gene
+annotations (calculate_shared_gene_length_distances).
 
+    from jme.jupy_tools.distances import multithreaded_distances
+    scores = multithreaded_distances(items, my_pair_function, threads=4)
+    scores[(key1, key2)]
 
+The pair function (and get_key_fn) must be picklable (defined at the top level
+of a module, not a lambda) when using more than one thread.
 """
-import numpy
-from itertools import combinations, product
+import math
+import os
 from functools import partial
+from itertools import combinations, product
 from multiprocessing import Pool
 
 from jme.jupy_tools.utils import first
+
+# Never use more than this many processes unless asked to
+MAX_DEFAULT_THREADS = 8
+
+
+def get_default_thread_count(max_threads=MAX_DEFAULT_THREADS):
+    """
+    Return a sensible number of worker processes: the number of available
+    CPUs, but no more than max_threads.
+    """
+    try:
+        available = len(os.sched_getaffinity(0))
+    except AttributeError:
+        # not available on all platforms (eg macOS)
+        available = os.cpu_count() or 1
+    return max(1, min(available, max_threads))
+
 
 def multithreaded_distances(
     data,
@@ -21,135 +47,167 @@ def multithreaded_distances(
     mirror=True,
 ):
     """
-    if mirror==True, save value for (key1, key2) and (key2, key1)
+    Run dist_fn on every pair of items in data, using multiple processes.
+
+    Parameters:
+        data: a sequence (list, tuple, array) of items. Must support slicing.
+        dist_fn: function taking two items and returning a score
+        chunk_root: the work is split into about chunk_root^2 chunks of
+            similar size
+        threads: number of worker processes. None or <= 0: use
+            get_default_thread_count() (all CPUs, capped at
+            MAX_DEFAULT_THREADS). 1: run in this process (no multiprocessing).
+        get_key_fn: function that gets an item's key (default: the first
+            element of the item)
+        mirror: if True, save each score as both (key1, key2) and (key2, key1)
+
+    Returns:
+        dict mapping (key1, key2) tuples to scores. Items are never compared
+        to themselves.
     """
-    chunks = chunkify_data(data,
-                           n=chunk_root)
     if threads is None or threads <= 0:
-        threads = chunk_root * chunk_root
+        threads = get_default_thread_count()
 
-    _process_chunk = partial(process_chunk, process_element_pair_fn=dist_fn, get_key_fn=get_key_fn)
+    chunks = chunkify_data(data, n=chunk_root)
+    _process_chunk = partial(
+        process_chunk, process_element_pair_fn=dist_fn, get_key_fn=get_key_fn
+    )
 
-    results = {}
+    if threads == 1:
+        chunk_results_iter = map(_process_chunk, chunks)
+        return _collect_results(chunk_results_iter, mirror)
+
     with Pool(processes=threads) as pool:
-        for chunk_results in pool.imap_unordered(_process_chunk, chunks):
-            for g1, g2, score in chunk_results:
-                results[(g1, g2)] = score
-                if mirror:
-                    results[(g2, g1)] = score
+        return _collect_results(pool.imap_unordered(_process_chunk, chunks), mirror)
 
+
+def _collect_results(chunk_results_iter, mirror):
+    """ Merge lists of (key1, key2, score) tuples into one dict of scores """
+    results = {}
+    for chunk_results in chunk_results_iter:
+        for key1, key2, score in chunk_results:
+            results[(key1, key2)] = score
+            if mirror:
+                results[(key2, key1)] = score
     return results
+
 
 def chunkify_data(data, n=5):
     """
-    Given an array of data (of any type), split into n^2 chunks for multithreaded all-v-all processing:
+    Split an all-v-all comparison of data into roughly n^2 equal-sized chunks.
 
-        * If N is the size of the array, calculate m as int(ceil(N/n))
-        * break up the NxN comparisons into n^2 chunks, each m x m
-        * return the chunks along the diagonal (will only process top half of each)
-        * return only the chunks above the diagnol, but split each in half
-    
-    params:
-        * data: array or list of arbitrary data
-        * n: dimension of chunking
+    With N items, the data is cut into n "row" slices of about N/n items.
+    Each row slice is yielded once paired with None (meaning: compare the
+    slice to itself) and then paired with each half-size slice of all the
+    data that comes after it. Every pair of items is covered exactly once.
 
-    yields:
-        * n^2 chunks that should have roughly equal processing time
-        * each chunk is two arrays of data to compare to each other
-        * except, for the n chunks on the diagonal, the second array is None
+    Parameters:
+        data: sequence of arbitrary items (must support len() and slicing)
+        n: the chunking dimension
+
+    Yields:
+        (slice_a, slice_b) tuples. slice_b is None for the self-comparison
+        chunks.
     """
-    end = 0
-    size2 = int(numpy.ceil(len(data)/(n*2)))
-    size1 = size2 * 2
-                
-    for i in range(n):
-        start = end
-        end = start + size1
-        
-        slice_a = data[start:end]
-        
+    data_len = len(data)
+    if data_len == 0:
+        return
+
+    col_size = max(1, math.ceil(data_len / (n * 2)))
+    row_size = col_size * 2
+
+    for row_start in range(0, data_len, row_size):
+        row_end = row_start + row_size
+        slice_a = data[row_start:row_end]
+
         # compare to self
         yield (slice_a, None)
-        
-        # compare to later slices
-        end_b = end
-        while end_b < len(data):
-            start_b = end_b
-            end_b = start_b + size2
-            yield (slice_a, data[start_b:end_b])
+
+        # compare to everything after this row
+        for col_start in range(row_end, data_len, col_size):
+            yield (slice_a, data[col_start:col_start + col_size])
+
 
 def process_chunk(chunk, process_element_pair_fn, get_key_fn=first):
-    """ given a pair of arrays:
+    """
+    Score every pair of items in a chunk from chunkify_data().
 
-         * run process_element_pair_fn on each combination of values
-         * if second array is None, run all-v-all on first array
+    If the second slice is None, every unique pair within the first slice is
+    scored. Otherwise every item in the first slice is scored against every
+    item in the second.
 
-    returns:
-        * list of 3-tuples: (key1, key2, values)
-        * where value is the result of running process_element_pair_fn(element1, element2)
-        * where key1 is the result of running get_key_fn on element1
+    Returns:
+        list of (key1, key2, score) tuples, where the keys come from
+        get_key_fn(item) and score is process_element_pair_fn(item1, item2)
     """
     slice_a, slice_b = chunk
-    
+
     if slice_b is None:
-        # all unique pairs in slice a
         pair_iter = combinations(slice_a, 2)
     else:
-        # all combos of pairs of items from slices a and b
         pair_iter = product(slice_a, slice_b)
-    
-    results = []
-    for element1, element2 in pair_iter:
-        results.append(
-            (get_key_fn(element1),
-             get_key_fn(element2),
-             process_element_pair_fn(element1, element2),
-            )
-        )
-    return results
 
+    return [
+        (
+            get_key_fn(element1),
+            get_key_fn(element2),
+            process_element_pair_fn(element1, element2),
+        )
+        for element1, element2 in pair_iter
+    ]
 
 
 ## specific methods for shared gene content in genomes
-def calc_shared_gene_length_ratio(genome1_data, genome2_data):
+def calc_shared_gene_length_ratio(genome1_data, genome2_data, ignore_annots=("Unknown",)):
     """
-    ASsumes each element is a 3-tuple:
+    Return the fraction of two genomes' total gene length that is in genes
+    with annotations found in both genomes.
+
+    Each genome's data is a 3-tuple (as made by gene_annots_to_data_array):
         * genome_id
-        * dict of gene_type to gene length in genome
-        * genome length
+        * dict of gene annotation to total gene length in that genome
+        * total gene length in the genome
 
-    returns the ratio of shared gene length (total in both genomes) to sum of genome lengths
+    Annotations in ignore_annots are never counted as shared.
+
+    Returns a value from 0 (nothing shared) to 1 (all genes shared). This is a
+    similarity, so use (1 - value) if you need a distance.
     """
-    (genome1, genes_lens_1, tot_len_1) = genome1_data
-    (genome2, genes_lens_2, tot_len_2) = genome2_data
+    (_genome1, gene_lens_1, tot_len_1) = genome1_data
+    (_genome2, gene_lens_2, tot_len_2) = genome2_data
 
-    # what genes are in both
-    shared_genes = set(genes_lens_1).intersection(genes_lens_2)
-    # what is the total length of these shared genes?
-    tot_shared_gene_len = sum((genes_lens_1[g] + genes_lens_2[g] 
-                               for g in shared_genes if g != "Unknown"))
-    # compare to total of all genes for score
     tot_gene_len = tot_len_1 + tot_len_2
+    if tot_gene_len == 0:
+        return 0.0
 
+    shared_annots = set(gene_lens_1).intersection(gene_lens_2).difference(ignore_annots)
+    tot_shared_gene_len = sum(
+        gene_lens_1[annot] + gene_lens_2[annot] for annot in shared_annots
+    )
     return tot_shared_gene_len / tot_gene_len
+
 
 def calculate_shared_gene_length_distances(
     gene_df,
     dist_fn=calc_shared_gene_length_ratio,
-    data_kws={},
+    data_kws=None,
     **kwargs,
 ):
     """
-    Cacluates the shared gene length ratio betwween every pair of genomes
-    
-    uses chunk_root * chunk_root threads unless specified
+    Calculate the shared gene length ratio between every pair of genomes.
 
-    Extra arguments are passed to gene_annots_to_data_array() via data_kws
+    Parameters:
+        gene_df: pandas DataFrame of genes (see gene_annots_to_data_array)
+        dist_fn: the pairwise function (default: calc_shared_gene_length_ratio)
+        data_kws: dict of extra arguments for gene_annots_to_data_array()
+        **kwargs: passed to multithreaded_distances() (eg threads, chunk_root)
 
-    **kwargs passed to multithreaded_distances()
+    Returns:
+        dict mapping (genome1, genome2) to the ratio
     """
-    data = gene_annots_to_data_array(gene_df, **data_kws)
+    data = gene_annots_to_data_array(gene_df, **(data_kws or {}))
     return multithreaded_distances(data, dist_fn=dist_fn, **kwargs)
+
 
 def gene_annots_to_data_array(
     gene_df,
@@ -160,37 +218,32 @@ def gene_annots_to_data_array(
     gene_len_col=None,
 ):
     """
-    Preprocess gene annotations into data array for distance calculations
+    Summarize gene annotations by genome for calculate_shared_gene_length_distances().
 
-    params:
-        * gene_df: pandas data frame with columns:
-                * genome: genome id
-                * annot: gene annotation
-                * start: gtart position of gene in genome
-                * end: end position of gene in genome
+    Parameters:
+        gene_df: pandas DataFrame with one row per gene and columns for:
+            * the genome id (genome_col)
+            * the gene annotation (annot_col)
+            * the gene start and end (1-based, inclusive) positions, or
+            * the gene length (gene_len_col, if given)
 
-    if gene_len_col given, that is used instead of start/end
-
-    returns:
-        numpy array of 3-element arrays where each has:
-            * genome id
-            * dict of gene annotation to length in genome (may be summed over multiple copies/fragments)
-            * total length of genes in genome
+    Returns:
+        list of (genome_id, {annotation: total_length}, total_gene_length)
+        tuples, one per genome (sorted by genome id). Lengths from multiple
+        genes with the same annotation are summed.
     """
     if gene_len_col is not None:
-        data = gene_df[[gene_len_col,genome_col,annot_col]]
+        gene_lens = gene_df[gene_len_col]
     else:
-        gene_len_col = 'gene_len'
-        data = gene_df[[gene_end_col,gene_start_col,genome_col,annot_col]]
-        data[gene_len_col] = data[gene_end_col] + 1 - data[gene_start_col]
+        gene_lens = gene_df[gene_end_col] + 1 - gene_df[gene_start_col]
 
-    return data \
-        .groupby([genome_col, annot_col]) \
-        .agg({gene_len_col:sum}) \
-        .reset_index() \
-        .set_index(annot_col) \
-        [[genome_col, gene_len_col]] \
-        .groupby(genome_col) \
-        .agg({gene_len_col:(dict, sum)}) \
-        .reset_index() \
-        .values
+    annot_lens = (
+        gene_lens
+        .groupby([gene_df[genome_col], gene_df[annot_col]])
+        .sum()
+    )
+
+    return [
+        (genome, genome_lens.droplevel(0).to_dict(), genome_lens.sum())
+        for genome, genome_lens in annot_lens.groupby(level=0)
+    ]

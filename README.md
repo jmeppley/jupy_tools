@@ -34,6 +34,7 @@ The following are used by certain submodules, but are not required otherwise.
  * scipy
  * scikit-learn
  * py_metagenomics (also from the jmeppley channel)
+ * samtools (to read BAM files in the mapping module)
 
 ## Caveat
 This repo is primarily intended for me, but I'm happy to share it. I find some of these really helpful, and maybe you will, too. However, there is no guarantee a consistent API. Stuff in experimental/ is almost guaranteed to change. Everything else *should* be more stable, but I make no promises.  
@@ -65,6 +66,19 @@ contents. It's still crude, but I find it useful.
 ### hit_tables
  
 Tools for parsing tables in paf or blast output formats into pandas dataframes.
+
+### smart_labels
+`annotate_points(ax, [("text", (x, y)), ...])` labels points on a matplotlib
+plot and moves any labels that would overlap, drawing arrows back to their
+points.
+
+### mapping
+Turn SAM/BAM files (or hit tables from `hit_tables`) into per-base coverage
+arrays with `parse_deltas_from_sam()` and `deltas_to_cov()`.
+
+### distances
+`multithreaded_distances(items, pair_fn)` runs a pairwise function on every
+pair of items using a (capped) pool of worker processes.
 
 ### imports
 Importing names from the root module:
