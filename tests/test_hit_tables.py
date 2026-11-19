@@ -249,7 +249,8 @@ def test_parse_blast():
     df = hit_tables.parse_blast_m8(_stream(SMALL_BLAST))
     assert list(df.columns) == hit_tables.BLAST_COLUMNS
     assert df.shape == (5, 12)
-    assert df.evalue.iloc[0] == 1e-50
+    # pandas' default float parser may be off by one ULP (1e-50 -> 9.999...e-51)
+    assert df.evalue.iloc[0] == pytest.approx(1e-50, rel=1e-9, abs=0)
 
 
 def test_parse_blast_from_path(tmp_path):
@@ -281,7 +282,8 @@ def test_parse_blast_cutoffs():
     # combined
     assert list(parse(pctid=90, mlen=150).mlen) == [200, 300]
     # negative cutoff: maximum value
-    assert sorted(parse(evalue=-1e-30).evalue) == [1e-90, 1e-80, 1e-50]
+    assert sorted(parse(evalue=-1e-30).evalue) == pytest.approx(
+        [1e-90, 1e-80, 1e-50], rel=1e-9, abs=0)
     # zero is ignored
     assert parse(pctid=0).shape[0] == 5
 
