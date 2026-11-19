@@ -326,3 +326,52 @@ def test_double_color_bar_linear(ax):
     ticks = [float(t.get_text()) for t in ax.get_yticklabels()]
     assert ticks[0] == 0 and ticks[-1] <= 10
     assert _ticklabels(ax) == ['pos', 'neg']
+
+
+def _colorbar_tick_values(hm):
+    cax = hm.axes['colorbar']
+    return [float(t.get_text().replace('−', '-'))
+            for t in cax.get_yticklabels() if t.get_text()]
+
+
+def test_abundance_heatmap_one_sided(close_figures):
+    """ unpaired, all positive data: only the positive half of the scale """
+    genomes, by_depth, by_month, by_tara = _synthetic_panels()
+    (tara_log,), zero_val = metag_heatmaps.signed_log([by_tara])
+    hm = metag_heatmaps.abundance_heatmap([tara_log], log_zero_val=zero_val,
+                                          panel_letters=False)
+    ticks = _colorbar_tick_values(hm)
+    assert min(ticks) == 0 and max(ticks) > 0
+    mesh = hm.axes['panel_0'].collections[0]
+    assert mesh.norm.vmin == 0 and mesh.norm.vmax == hm.vmax
+    # zero is drawn white-ish (the middle of PuOr), the max is dark purple
+    assert numpy.allclose(mesh.cmap(0.0), plt_cmap('PuOr')(.5), atol=.02)
+    assert numpy.allclose(mesh.cmap(1.0), plt_cmap('PuOr')(1.0), atol=.02)
+
+    # negated data uses the other half
+    hm = metag_heatmaps.abundance_heatmap([-tara_log], log_zero_val=zero_val,
+                                          panel_letters=False)
+    ticks = _colorbar_tick_values(hm)
+    assert max(ticks) == 0 and min(ticks) < 0
+
+    # sign='both' keeps the full diverging scale
+    hm = metag_heatmaps.abundance_heatmap([tara_log], log_zero_val=zero_val,
+                                          panel_letters=False, sign='both')
+    ticks = _colorbar_tick_values(hm)
+    assert min(ticks) < 0 < max(ticks)
+
+
+def plt_cmap(name):
+    from matplotlib import pyplot as plt
+    return plt.get_cmap(name)
+
+
+def test_log_ticks_not_crowded_at_zero():
+    # tiny zero_val (like real coverages) used to give a 1e-4 tick on top of 0
+    zero_val = 5e-5
+    vmax = float(numpy.log(1e4 + zero_val) - numpy.log(zero_val))
+    ticks = metag_heatmaps._log_ticks(vmax, zero_val)
+    assert ticks[0] == 0
+    positions = numpy.log(numpy.array(ticks[1:]) + zero_val) - \
+        numpy.log(zero_val)
+    assert (positions >= .08 * vmax).all()

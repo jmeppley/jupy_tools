@@ -621,8 +621,13 @@ def _draw_strips(ax, strips, genome_order, fontsize):
         spine.set_visible(False)
 
 
-def _log_ticks(vmax, zero_val, max_ticks=6):
-    """ nice real values (1, 2, 5 x 10^k) for a signed_log scale """
+def _log_ticks(vmax, zero_val, max_ticks=6, min_gap=.08):
+    """
+    nice real values (1, 2, 5 x 10^k) for a signed_log scale
+
+    Ticks closer to 0 than min_gap (as a fraction of the bar) are dropped so
+    their labels don't overlap the 0 label.
+    """
     real_max = float(signed_exp(vmax, zero_val))
     if real_max <= 0:
         return [0.0]
@@ -631,7 +636,10 @@ def _log_ticks(vmax, zero_val, max_ticks=6):
     for mults in ([1], [1, 3], [1, 2, 5]):
         ticks = [m * 10 ** k for k in numpy.arange(lo, hi + 1)
                  for m in mults]
-        ticks = [t for t in ticks if zero_val < t <= real_max]
+        ticks = [t for t in ticks
+                 if zero_val < t <= real_max and
+                 numpy.log(t + zero_val) - numpy.log(zero_val)
+                 >= min_gap * vmax]
         if len(ticks) >= 3:
             break
     if len(ticks) > max_ticks - 1:
@@ -697,11 +705,35 @@ def double_color_bar(ax, cmap, vmax, n_steps=100, zero_val=None,
     return ax
 
 
+def _data_sign(panels):
+    """ 'positive', 'negative' or 'both' """
+    if any(p.paired for p in panels):
+        return 'both'
+    values = numpy.concatenate([p.data.values.astype(float).ravel()
+                                for p in panels])
+    values = values[numpy.isfinite(values)]
+    if (values >= 0).all():
+        return 'positive'
+    if (values <= 0).all():
+        return 'negative'
+    return 'both'
+
+
+def _half_cmap(cmap, sign, n=256):
+    """ the upper (positive) or lower (negative) half of a diverging cmap """
+    from matplotlib import pyplot as plt
+    from matplotlib.colors import ListedColormap
+    cmap = plt.get_cmap(cmap)
+    lo, hi = (.5, 1) if sign == 'positive' else (0, .5)
+    return ListedColormap(cmap(numpy.linspace(lo, hi, n)),
+                          name=f"{cmap.name}_{sign}")
+
+
 def abundance_heatmap(panels, strips=(), cmap='PuOr', vmax=None,
                       genome_order=None, metric='correlation',
                       method='average', dendrogram=True,
                       label_color_fn=None, label_rename_fn=None,
-                      genome_labels=True, colorbar='auto',
+                      genome_labels=True, colorbar='auto', sign='auto',
                       colorbar_label='Mean coverage\nper billion reads',
                       log_zero_val=None, fraction_labels=FRACTION_LABELS,
                       panel_letters=True, separators=True,
@@ -715,7 +747,8 @@ def abundance_heatmap(panels, strips=(), cmap='PuOr', vmax=None,
             genome i spans x = [i, i+1]; paired panels split that space
             into one sub-column per fraction.
     strips: list of MetadataStrip drawn under the panels
-    cmap: diverging colormap (color scale is -vmax..vmax)
+    cmap: diverging colormap (color scale is -vmax..vmax, or just one half
+          of it, see sign)
     vmax: default: max |value| over all panels
     genome_order: use this order instead of clustering
     metric, method: for scipy clustering of genomes
@@ -723,6 +756,10 @@ def abundance_heatmap(panels, strips=(), cmap='PuOr', vmax=None,
     label_color_fn: genome -> color for the genome labels
     label_rename_fn: genome -> text for the genome labels
     genome_labels: label genomes under the bottom panel
+    sign: 'both', 'positive', 'negative' or 'auto'. With 'positive' only the
+          upper half of cmap is used (0..vmax), and the color bar only shows
+          that half ('negative' likewise uses the lower half). 'auto' picks
+          'both' if any panel is paired or the data has both signs.
     colorbar: 'double', 'single', None or 'auto' (double if any panel is
               paired, else single)
     log_zero_val: zero_val from signed_log, to label the color bar in real
@@ -757,7 +794,17 @@ def abundance_heatmap(panels, strips=(), cmap='PuOr', vmax=None,
                    for p in panels)
         if not vmax > 0:
             vmax = 1.0
-    norm = Normalize(-vmax, vmax)
+    if sign == 'auto':
+        sign = _data_sign(panels)
+    if sign == 'both':
+        norm = Normalize(-vmax, vmax)
+    elif sign in ('positive', 'negative'):
+        cmap = _half_cmap(cmap, sign)
+        norm = Normalize(0, vmax) if sign == 'positive' else \
+            Normalize(-vmax, 0)
+    else:
+        raise ValueError(f"sign must be 'both', 'positive', 'negative' or "
+                         f"'auto', not {sign!r}")
 
     if colorbar == 'auto':
         colorbar = 'double' if any(p.paired for p in panels) else 'single'
@@ -855,7 +902,10 @@ def abundance_heatmap(panels, strips=(), cmap='PuOr', vmax=None,
                 cb.set_label(colorbar_label, fontsize=fontsize)
             if log_zero_val is not None:
                 ticks = _log_ticks(vmax, log_zero_val)
-                ticks = [-t for t in ticks[:0:-1]] + ticks
+                if sign == 'both':
+                    ticks = [-t for t in ticks[:0:-1]] + ticks
+                elif sign == 'negative':
+                    ticks = [-t for t in ticks[::-1]]
                 cb.set_ticks(signed_log(pandas.DataFrame({'t': ticks}),
                                         zero_val=log_zero_val)[0]['t'].values)
                 cb.set_ticklabels([_tick_text(t) for t in ticks])
