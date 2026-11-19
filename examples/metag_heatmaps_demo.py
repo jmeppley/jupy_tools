@@ -11,6 +11,7 @@ import numpy
 import polars as pl
 
 from jme.jupy_tools.experimental import metag_heatmaps
+from jme.jupy_tools.utils import save_fig_to_pdf
 
 VIRAL = metag_heatmaps.ALOHA_VIRAL        # '20-02', plotted positive
 CELLULAR = metag_heatmaps.ALOHA_CELLULAR  # '00-20', plotted negative
@@ -110,7 +111,7 @@ def main(out='metag_heatmaps_demo.png'):
         log_zero_val=zero_val,
     )
     if out.endswith('.pdf'):
-        metag_heatmaps.save_pdf(hm.fig, out)
+        save_fig_to_pdf(hm.fig, out, close=False)
     else:
         hm.fig.savefig(out, bbox_inches='tight', dpi=100)
     return hm

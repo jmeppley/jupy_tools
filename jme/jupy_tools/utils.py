@@ -149,16 +149,50 @@ def dotplot(qhits, ax=None, subplots_kws=None, seq_length=None, **plot_kwargs):
             **plot_kwargs
         )
 
-def save_fig_to_pdf(fig, fname, **kwargs):
+def _as_figure(fig):
+    """
+    Return the matplotlib Figure for fig, which can be a Figure or an object
+    that holds one in .figure or .fig (eg a seaborn ClusterGrid or a
+    metag_heatmaps.HeatmapFigure). Returns None for anything else.
+    """
+    from matplotlib.figure import Figure
+    if isinstance(fig, Figure):
+        return fig
+    for attr in ('figure', 'fig'):
+        inner = getattr(fig, attr, None)
+        if isinstance(inner, Figure):
+            return inner
+    return None
+
+
+def save_fig_to_pdf(figs, fname, close=True, **kwargs):
+    """
+    Save one or more figures to a PDF, one page per figure.
+
+    figs: a matplotlib Figure (or an object with a .figure or .fig
+          attribute, like a seaborn ClusterGrid), or an iterable of them.
+          A generator works too: each figure is saved (and closed) before
+          the next one is made, so only one has to be in memory at a time.
+    fname: path of the PDF to write
+    close: close each figure after it is saved
+    kwargs: passed to PdfPages.savefig (bbox_inches defaults to 'tight')
+    """
     from matplotlib.backends.backend_pdf import PdfPages
     from matplotlib import pyplot as plt
-    pdf_file = fname
-    pdf = PdfPages(pdf_file)
 
-    pdf.savefig(figure=fig, bbox_inches='tight')
-    plt.close()
+    single = _as_figure(figs)
+    if single is not None:
+        figs = [single]
 
-    pdf.close()
+    kwargs.setdefault('bbox_inches', 'tight')
+    with PdfPages(fname) as pdf:
+        for fig in figs:
+            figure = _as_figure(fig)
+            if figure is None:
+                raise TypeError(f"Not a matplotlib figure: {fig!r}")
+            pdf.savefig(figure=figure, **kwargs)
+            if close:
+                plt.close(figure)
 
 def _print(msg, *format_variables):
     if format_variables is None:

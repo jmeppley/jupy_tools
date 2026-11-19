@@ -27,6 +27,7 @@ Example::
 
     import polars as pl
     from jme.jupy_tools.experimental import metag_heatmaps
+    from jme.jupy_tools.utils import save_fig_to_pdf
 
     # long table of hits: sample, genome, cov
     hits = pl.read_csv('phage.covs.tsv', separator='\\t')
@@ -75,7 +76,7 @@ Example::
         fraction_labels=('particles < 0.2 \\u03bcm',
                          'particles > 0.2 \\u03bcm'),
     )
-    metag_heatmaps.save_pdf(hm.fig, 'Figure.4.pdf')
+    save_fig_to_pdf(hm.fig, 'Figure.4.pdf')  # (also takes a list of figs)
 
     hm.genome_order    # genomes in dendrogram order
     hm.axes['panel_0'] # matplotlib axes for further tweaks
@@ -929,13 +930,3 @@ def abundance_heatmap(panels, strips=(), cmap='PuOr', vmax=None,
     return HeatmapFigure(fig=fig, axes=axes, genome_order=genome_order,
                          linkage=link, vmax=vmax, panels=panels)
 
-
-def save_pdf(figs, path, **kwargs):
-    """ save one figure or a list of figures (one per page) to a PDF """
-    from matplotlib.backends.backend_pdf import PdfPages
-    if not isinstance(figs, (list, tuple)):
-        figs = [figs]
-    kwargs.setdefault('bbox_inches', 'tight')
-    with PdfPages(path) as pdf:
-        for fig in figs:
-            pdf.savefig(figure=getattr(fig, 'fig', fig), **kwargs)

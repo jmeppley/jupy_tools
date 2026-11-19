@@ -12,6 +12,7 @@ polars = pytest.importorskip("polars")
 pytest.importorskip("scipy")
 
 from jme.jupy_tools.experimental import metag_heatmaps  # noqa: E402
+from jme.jupy_tools.utils import save_fig_to_pdf  # noqa: E402
 
 V, C = metag_heatmaps.ALOHA_VIRAL, metag_heatmaps.ALOHA_CELLULAR
 
@@ -292,7 +293,7 @@ def test_abundance_heatmap(close_figures, tmp_path):
     assert texts == ['(A)', '(B)', '(C)', '(D)']
 
     pdf = tmp_path / 'fig.pdf'
-    metag_heatmaps.save_pdf(hm, str(pdf))
+    save_fig_to_pdf(hm.fig, str(pdf))
     assert os.path.getsize(pdf) > 0
 
 
