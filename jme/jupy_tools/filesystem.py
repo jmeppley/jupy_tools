@@ -214,12 +214,16 @@ def get_file_sizes_and_dates_by_uid(volume, users=None, min_age=0, follow_links=
      * time_stat: one of 'mtime', 'ctime', 'atime', or 'max'
     """
 
-    # translate user ids to names
-    userid_map = get_user_lookup_table().to_dict()
+    # translate user ids to names (cached, since there are lots of files)
+    user_names = {}
+    def get_user_name(uid):
+        if uid not in user_names:
+            user_names[uid] = _get_user_name(uid)
+        return user_names[uid]
 
     # translate userids to names in include list
     if users is not None:
-        users = set(userid_map.get(u, u) for u in users)
+        users = set(get_user_name(u) for u in users)
 
     usage_data = defaultdict(lambda: [])
     min_date = int(datetime.now().timestamp())
@@ -235,7 +239,7 @@ def get_file_sizes_and_dates_by_uid(volume, users=None, min_age=0, follow_links=
 
                 # filter by owner if user list given
                 ownerid = file_stats.st_uid
-                owner = userid_map.get(ownerid, ownerid)
+                owner = get_user_name(ownerid)
                 if users is not None and owner not in users:
                     continue
 
@@ -324,8 +328,34 @@ def get_bin_bounds_string(bin_index, bin_bounds, to_str=repr, suffix=""):
     return "{} to {} {}".format(to_str(bin_bounds[bin_index]), to_str(bin_bounds[bin_index + 1]), suffix)
 
 def get_user_lookup_table():
-    """ returns series mapping user id to user name """
-    return pandas.read_table('/etc/passwd', sep=':', names=['user','code','id','group','home','shell'], index_col=2)['user']
+    """
+    returns series mapping user id to user name
+
+    Uses the system user database (the pwd module), not /etc/passwd, so it
+    works on macOS and includes directory (LDAP, etc) users where the system
+    lists them. Some systems don't list directory users: use
+    _get_user_name() to look up a single user id.
+    """
+    import pwd
+    users = {}
+    for entry in pwd.getpwall():
+        # if a user id has more than one name, keep the first
+        users.setdefault(entry.pw_uid, entry.pw_name)
+    return pandas.Series(users, name='user', dtype=object)
+
+
+def _get_user_name(uid):
+    """
+    Look up the user name for a user id. Returns the id itself if there's no
+    such user, or if it isn't an integer (eg it's already a name).
+    """
+    import pwd
+    if not isinstance(uid, (int, numpy.integer)):
+        return uid
+    try:
+        return pwd.getpwuid(int(uid)).pw_name
+    except (KeyError, OverflowError):
+        return uid
 
 def go_to_dir(dirname, quiet=False):
     """
