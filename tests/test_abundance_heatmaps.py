@@ -1,5 +1,5 @@
 """
-Tests for jme.jupy_tools.experimental.metag_heatmaps, using small synthetic
+Tests for jme.jupy_tools.abundance_heatmaps, using small synthetic
 tables (the real data lives on the lab servers).
 """
 import os
@@ -11,7 +11,7 @@ import pytest
 polars = pytest.importorskip("polars")
 pytest.importorskip("scipy")
 
-from jme.jupy_tools.experimental import metag_heatmaps  # noqa: E402
+from jme.jupy_tools import abundance_heatmaps as metag_heatmaps  # noqa: E402
 from jme.jupy_tools.utils import save_fig_to_pdf  # noqa: E402
 
 V, C = metag_heatmaps.ALOHA_VIRAL, metag_heatmaps.ALOHA_CELLULAR
@@ -440,3 +440,93 @@ def test_log_ticks_not_crowded_at_zero():
     positions = numpy.log(numpy.array(ticks[1:]) + zero_val) - \
         numpy.log(zero_val)
     assert (positions >= .08 * vmax).all()
+
+
+##########
+# metadata strips from a plot_metadata config (shared with the tree plots)
+
+@pytest.fixture
+def genome_md():
+    return pandas.DataFrame({
+        'genome': ['g1', 'g2', 'g3', 'g4'],
+        'seq_type': ['Ref', 'Novel', 'Novel', None],
+        'is_novel': [False, True, True, True],
+        'Host': ['Cyano', None, 'SAR11', 'SAR11'],
+        'GC': [.3, .4, .5, .35],
+        'Length': [1000, 2000, 4000, 3000],
+    }).set_index('genome')
+
+
+@pytest.fixture
+def plot_md():
+    return {"genomes": {"metadata": [
+        {"column": "seq_type", "label": "Type",
+         "color_dict": {"Ref": "black", "Novel": "blue",
+                        "null": [1.0, 1.0, 1.0, 0.0]},
+         "rename": {"Ref": "Reference"}},
+        {"column": "is_novel", "label": "New",
+         "color_dict": {"true": "red", "false": "white"}},
+        None,
+        {"column": "GC", "color_map": "brg"},
+        {"column": "Length", "color_map": "red"},   # bars in the trees
+        {"column": "Host", "use_tree_seqs": True},
+        {"column": "not_in_table", "label": "Missing"},
+    ]}}
+
+
+def test_metadata_strips_match_tree_colors(plot_md, genome_md):
+    from matplotlib.colors import to_rgba
+    from jme.jupy_tools import plot_metadata
+    strips = metag_heatmaps.metadata_strips(plot_md, genome_md)
+    # spacer and missing column skipped, config order kept
+    assert [s.label for s in strips] == ['Type', 'New', 'GC', 'Length',
+                                         'Host']
+    by_label = {s.label: s for s in strips}
+    assert by_label['Type'].color('g1') == 'black'
+    assert by_label['New'].color('g2') == 'red'       # "true" key works
+    assert to_rgba(by_label['Type'].color('g4'))[3] == 0  # missing value
+    # same colors as the tree plots get from the same spec
+    tree_md = plot_metadata.load_plot_metadata(plot_md) \
+        .get_spec('GC').build(genome_md)
+    assert by_label['GC'].color('g3') == tree_md.get_item_color('g3')
+    # bar metadata -> opacity
+    alphas = [to_rgba(by_label['Length'].color(g))[3]
+              for g in ['g1', 'g3']]
+    assert alphas[0] < alphas[1] == pytest.approx(1)
+
+
+def test_metadata_strips_columns_and_genomes(plot_md, genome_md):
+    strips = metag_heatmaps.metadata_strips(
+        plot_md, metag_heatmaps.to_polars(genome_md.reset_index()),
+        genomes=['g2'], columns=['Host', 'Type'])
+    # Host is all missing for g2: dropped
+    assert [s.label for s in strips] == ['Type']
+    with pytest.raises(KeyError):
+        metag_heatmaps.metadata_strips(plot_md, genome_md,
+                                       columns=['nope'])
+
+
+def test_heatmap_with_plot_metadata(hits, md, plot_md, genome_md, tmp_path,
+                                    close_figures):
+    by_depth = metag_heatmaps.aggregate(hits, md, 'depth',
+                                        genomes=['g1', 'g2', 'g3'])
+    hm = metag_heatmaps.abundance_heatmap(
+        [by_depth], strips=[metag_heatmaps.MetadataStrip('Custom',
+                                                         {'g1': 'pink'})],
+        plot_metadata=plot_md, genome_md=genome_md,
+        metadata_columns=['Type', 'GC', 'Host'], strip_legends=True)
+    labels = [t.get_text() for t in hm.axes['strips'].get_yticklabels()]
+    assert labels == ['Custom', 'Type', 'GC', 'Host']
+    # legends for the metadata strips (not the custom one)
+    titles = [lg.get_title().get_text() for lg in hm.legends]
+    assert titles == ['Type', 'GC', 'Host']
+    type_labels = [t.get_text() for t in hm.legends[0].get_texts()]
+    assert set(type_labels) == {'Reference', 'Novel'}
+    # legends don't overlap each other
+    renderer = hm.fig.canvas.get_renderer()
+    boxes = [lg.get_window_extent(renderer) for lg in hm.legends]
+    assert all(a.x1 <= b.x0 for a, b in zip(boxes, boxes[1:]))
+    hm.fig.savefig(tmp_path / 'hm.png', bbox_inches='tight')
+
+    with pytest.raises(ValueError):
+        metag_heatmaps.abundance_heatmap([by_depth], plot_metadata=plot_md)

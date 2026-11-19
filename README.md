@@ -33,7 +33,28 @@ The following are used by certain submodules, but are not required otherwise.
  * biopython 
  * scipy
  * scikit-learn
+ * attrs
  * py_metagenomics (also from the jmeppley channel)
+
+## Plotting modules
+
+The tree, gene map and abundance plots share one data model (see the
+`plot_metadata` docstring): a genome metadata table (pandas indexed by genome
+or polars with a `genome` column), a gene table (one row per gene) and a
+`plot_metadata` JSON / `PlotConfig` listing which metadata to draw and how to
+colour it.
+
+ * `plot_metadata`: `MetadataSpec`, `PlotConfig`, `load_plot_metadata`,
+   `TreeMetadata` and legend helpers
+ * `tree_plots`: `SyntenyTreePlotter` (trees + metadata + gene synteny),
+   clade collapsing, plain phylograms
+ * `circular_trees`: circular trees with metadata rings
+ * `gene_maps`: import prodigal/phanotate gene calls and draw gene maps
+ * `abundance_heatmaps`: clustered metagenome abundance heatmaps
+
+These replace `experimental.vlp_plots_2`, `cluster_trees` (plotting parts),
+`gene_synteny` and `metag_heatmaps`, which now just re-export them (with a
+DeprecationWarning).
 
 ## Caveat
 This repo is primarily intended for me, but I'm happy to share it. I find some of these really helpful, and maybe you will, too. However, there is no guarantee a consistent API. Stuff in experimental/ is almost guaranteed to change. Everything else *should* be more stable, but I make no promises.  

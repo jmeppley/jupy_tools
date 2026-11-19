@@ -430,3 +430,54 @@ def get_snake_status_table(logfile, as_dict=False, slurm=False):
         return rules_by_job_id
     
     return pandas.DataFrame(rules_by_job_id).T
+
+
+##########
+# pandas / polars at API boundaries
+#  (polars is imported lazily so it stays optional for the rest of utils)
+
+def is_polars(df):
+    """ True if df is a polars DataFrame (without importing polars) """
+    return type(df).__module__.split('.')[0] == 'polars'
+
+
+def to_polars(df):
+    """ accept polars or pandas tables, return polars """
+    import polars
+    if isinstance(df, polars.DataFrame):
+        return df
+    if isinstance(df, pandas.DataFrame):
+        # (avoid polars.from_pandas, it needs pyarrow for string columns)
+        return polars.DataFrame({c: _series_values(df[c])
+                                 for c in df.columns})
+    raise TypeError(f"Expected a polars or pandas DataFrame, got {type(df)}")
+
+
+def _series_values(series):
+    """ list of values with NaN as None in non-numeric columns """
+    if (not pandas.api.types.is_numeric_dtype(series)) \
+            and series.isna().any():
+        return [None if pandas.isna(v) else v for v in series]
+    return series.tolist()
+
+
+def to_pandas(df):
+    """ polars -> pandas without needing pyarrow (pandas passes through) """
+    if isinstance(df, pandas.DataFrame):
+        return df
+    return pandas.DataFrame(df.to_dict(as_series=False))
+
+
+def to_pandas_indexed(df, index_col):
+    """
+    Convert a table to pandas indexed by index_col.
+
+    pandas tables are returned unchanged (they're assumed to be indexed
+    already, as the older code expects). polars tables (which have no index)
+    are converted and index_col is moved to the index.
+    """
+    if df is None or isinstance(df, pandas.DataFrame):
+        return df
+    if is_polars(df):
+        return to_pandas(df).set_index(index_col)
+    raise TypeError(f"Expected a polars or pandas DataFrame, got {type(df)}")
