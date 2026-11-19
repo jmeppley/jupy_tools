@@ -1497,11 +1497,13 @@ def get_collapsed_nodes(
             continue
 
         # check the max depth
-        depths = clade.depths()
-        if not max(depths.values()):
-            depths = clade.depths(unit_branch_lengths=True)
-        max_d = max(depths[t] for t in clade.get_terminals())
-        
+        # (commented out for now: max_d isn't used yet, and the depths are
+        #  slow to compute for every clade of a big tree)
+        # depths = clade.depths()
+        # if not max(depths.values()):
+        #     depths = clade.depths(unit_branch_lengths=True)
+        # max_d = max(depths[t] for t in clade.get_terminals())
+
         if debug:
             counts['clades_checked'] += 1
 

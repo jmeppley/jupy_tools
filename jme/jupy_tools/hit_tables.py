@@ -2,7 +2,6 @@ import logging
 import re
 import numpy
 import pandas
-from itertools import islice
 from functools import partial
 from contextlib import contextmanager
 from collections import defaultdict
@@ -111,8 +110,36 @@ blast_tab_rexp = re.compile(r"""^
                         """,
                              flags=re.VERBOSE)
 
+# lastal tabular output: positions are given as a 0-based start and an
+#  alignment size. For the "-" strand, the start is on the reverse strand.
+lastal_rexp = re.compile(r"""^
+                        (?P<score>\S+)\t
+                        (?P<hit>\S+)\t
+                        (?P<hstart>\d+)\t
+                        (?P<hmlen>\d+)\t
+                        (?P<hstrand>[+-])\t
+                        (?P<hlen>\d+)\t
+                        (?P<query>\S+)\t
+                        (?P<qstart>\d+)\t
+                        (?P<qmlen>\d+)\t
+                        (?P<qstrand>[+-])\t
+                        (?P<qlen>\d+)\t
+                        """,
+                         flags=re.VERBOSE)
+
 HIT_TABLE_REXPS = {PAF: paf_rexp, PAF_ALL: paf_rexp, BLAST: blast_tab_rexp,
-                   BLAST_PLUS: blast_plus_rexp}
+                   BLAST_PLUS: blast_plus_rexp, LASTAL: lastal_rexp}
+
+
+def _lastal_forward_range(start, size, strand, seq_len):
+    """
+    0-based, end-exclusive range on the forward strand for a lastal
+    alignment (whose start is on the reverse strand if strand is "-")
+    """
+    start, size = int(start), int(size)
+    if strand == '-':
+        start = int(seq_len) - start - size
+    return start, start + size
 
 def computeLastHitValues(blocks):
     """
@@ -125,6 +152,10 @@ def computeLastHitValues(blocks):
         where integer elements indicate lenghts of matches and
         colon separated elements indicate lengths of gaps
     """
+    # an ungapped alignment's blocks are just a number, and if every line
+    #  in a file is ungapped, the column is read as integers
+    blocks = str(blocks)
+
     matchLen = 0
     for segment in blocks.split(','):
         try:
@@ -272,9 +303,16 @@ def parse_blast_m8(
     if format == LASTAL:
         hits['qsmult'] = [1 if qs == '+' else -1 
                           for qs in hits.qstrand]
-        hits = \
-            hits.eval('hend = hstart + hmlen - 1') \
-                .eval('qend = qstart + ((qmlen - 1) * qsmult)')
+        # positions are 0-based. lastal gives "-" strand starts on the reverse
+        #  strand, so convert them to the forward strand. Like BLAST tables,
+        #  start > end for "-" strand alignments.
+        for pref in ['q', 'h']:
+            reverse = hits[pref + 'strand'] == '-'
+            start = hits[pref + 'start'].where(
+                ~reverse, hits[pref + 'len'] - 1 - hits[pref + 'start'])
+            hits[pref + 'start'] = start
+            hits[pref + 'end'] = start + \
+                (hits[pref + 'mlen'] - 1) * numpy.where(reverse, -1, 1)
         hits['mlen'] = [computeLastHitValues(blocks)
                         for blocks in hits.match_string]
         hits['evalue'] = [float(re.sub('E=','',str(e)))
@@ -347,15 +385,24 @@ def _parse_blast_m8_polars(
               .cast(pl.Int8)
               .alias('qsmult')
         )
+        # positions are 0-based. lastal gives "-" strand starts on the reverse
+        #  strand, so convert them to the forward strand. Like BLAST tables,
+        #  start > end for "-" strand alignments.
+        hits = hits.with_columns(
+            pl.when(pl.col(f'{pref}strand') == '-')
+              .then(pl.col(f'{pref}len') - 1 - pl.col(f'{pref}start'))
+              .otherwise(pl.col(f'{pref}start'))
+              .alias(f'{pref}start')
+            for pref in ['q', 'h']
+        )
         hits = hits.with_columns(
             (
-                pl.col('hstart') + pl.col('hmlen') - 1
-            ).alias('hend'),
-            (
-                pl.col('qstart') + (
-                    pl.col('qmlen') -1
-                ) * pl.col('qsmult')
-            ).alias('qend'),
+                pl.col(f'{pref}start') + (pl.col(f'{pref}mlen') - 1) *
+                pl.when(pl.col(f'{pref}strand') == '-').then(-1).otherwise(1)
+            ).alias(f'{pref}end')
+            for pref in ['q', 'h']
+        )
+        hits = hits.with_columns(
             pl.col('match_string').map_elements(
                 computeLastHitValues,
                 return_dtype=pl.UInt32,
@@ -411,7 +458,7 @@ def remove_pair_overlaps(hit_table, **params):
 def generate_nonoverlapping_lines(hit_file, format=BLAST_PLUS, buffer=0):
     """
     Loops over lines in a hit_table keeping track of hit and query positions. Currently
-    supported formats are paf and blasttab+
+    supported formats are paf, paf+, blasttab, blasttab+ and lastal
 
     Only yields lines that don't overlap with previous hits between a query/hit pair
     """
@@ -432,6 +479,13 @@ def generate_nonoverlapping_lines(hit_file, format=BLAST_PLUS, buffer=0):
             
             try:
                 hit_data = hit_rexp.search(line).groupdict()
+                if format == LASTAL:
+                    # convert start and size to forward strand ranges
+                    for pref in ['q', 'h']:
+                        (hit_data[pref + 'start'],
+                         hit_data[pref + 'end']) = _lastal_forward_range(
+                            *[hit_data[pref + k]
+                              for k in ['start', 'mlen', 'strand', 'len']])
                 query, qstart, qend, hit, hstart, hend = \
                     [hit_data[k] for k in ['query', 'qstart', 'qend', 'hit', 'hstart', 'hend']]
             except AttributeError:
@@ -501,6 +555,22 @@ def _use_bed_coords(bed_coords, columns):
     return bed_coords
 
 
+def _has_identity(columns):
+    """
+    Can we calculate matches and pctid? (lastal tables have no identity)
+    """
+    return 'matches' in columns or 'pctid' in columns
+
+
+def _fragment_rank_col(columns):
+    """ the column used to pick the best fragments for max_hit_fragments """
+    if _has_identity(columns):
+        return 'matches'
+    if 'score' in columns:
+        return 'score'
+    return 'mlen'
+
+
 def agg_hit_polars_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False,
                       bed_coords=None):
     import polars as pl
@@ -515,8 +585,9 @@ def agg_hit_polars_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False,
 
     columns = set(non_ovl_hits.collect_schema() if lazy else non_ovl_hits.columns)
     end_offset = 0 if _use_bed_coords(bed_coords, columns) else 1
+    has_identity = _has_identity(columns)
     
-    if 'matches' not in columns:
+    if has_identity and 'matches' not in columns:
         non_ovl_hits = non_ovl_hits.with_columns(
             ((pl.col('pctid') * pl.col('mlen')) / 100).alias('matches')
         )
@@ -525,11 +596,10 @@ def agg_hit_polars_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False,
     if max_hit_fragments > 0:
         raise Exception("Limiting hit fragments in aggregation with max_hit_fragments is not yet supported.")
 
-    # add up the match counts and match lengths
-    agg_col_exprs = [
-        pl.col('matches').sum(),
-        pl.col('mlen').sum()
-    ]
+    # add up the match counts (if known) and match lengths
+    agg_col_exprs = [pl.col('mlen').sum()]
+    if has_identity:
+        agg_col_exprs.insert(0, pl.col('matches').sum())
 
     if 'score' in columns:
         agg_col_exprs.append(
@@ -571,10 +641,12 @@ def agg_hit_polars_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False,
                 (pl.col(ecol) + end_offset - pl.col(scol)).sum().alias(f"{pref}mlen")
             )
 
-    post_agg_cols = [
-        (pl.col('matches') * 100 / pl.col('mlen')).alias('pctid')
-    ]
-    if 'qlen' in columns and 'hlen' in columns:
+    post_agg_cols = []
+    if has_identity:
+        post_agg_cols.append(
+            (pl.col('matches') * 100 / pl.col('mlen')).alias('pctid')
+        )
+    if has_identity and 'qlen' in columns and 'hlen' in columns:
         post_agg_cols.append(
             (pl.col('matches') * 200 / (pl.col('hlen') + pl.col('qlen'))).alias('mfrac')
         )
@@ -592,6 +664,10 @@ def agg_hit_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False,
     """
     Merge hit fragments into one row per query/hit pair
 
+    matches, mlen and score (if present) are summed over the fragments.
+    Tables without pctid or matches (eg lastal) are aggregated without
+    matches, pctid or mfrac.
+
     params:
      * max_hit_fragments: only merge the N best fragments (unlimited)
      * keep_extent: keep the smallest start and largest end positions
@@ -606,25 +682,31 @@ def agg_hit_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False,
                                  bed_coords)
 
     end_offset = 0 if _use_bed_coords(bed_coords, non_ovl_hits.columns) else 1
+    has_identity = _has_identity(non_ovl_hits.columns)
+
+    # work on a copy (positions are sorted and columns added below)
+    non_ovl_hits = non_ovl_hits.copy()
         
     # aggregate all hits by hit/query pair
-    if 'matches' not in non_ovl_hits.columns:
+    if has_identity and 'matches' not in non_ovl_hits.columns:
         non_ovl_hits = non_ovl_hits.eval('matches = pctid * mlen / 100')
         
-    # allow for the option to just sum the first N fragments
+    # allow for the option to just use the best N fragments (all of the
+    #  aggregated values, including lengths and extents, come from them)
     if max_hit_fragments > 0:
-        def sum_first_N(S):
-            return sum(islice(S, max_hit_fragments))
-        non_ovl_hits = non_ovl_hits.sort_values('matches', ascending=False)
-    else:
-        sum_first_N = sum
+        non_ovl_hits = non_ovl_hits \
+            .sort_values(_fragment_rank_col(non_ovl_hits.columns),
+                         ascending=False, kind='stable') \
+            .groupby(['query', 'hit']) \
+            .head(max_hit_fragments)
 
-    # addup match ids and match lengths
-    agg_dict = {'matches':sum_first_N,
-                'mlen':sum_first_N}
+    # addup match ids (if known) and match lengths
+    agg_dict = {'mlen':sum}
+    if has_identity:
+        agg_dict = {'matches':sum, **agg_dict}
 
     if 'score' in non_ovl_hits.columns:
-        agg_dict['score'] = sum_first_N
+        agg_dict['score'] = sum
 
     # also save qlen and hlen if present
     for col in ['qlen', 'hlen']:
@@ -658,11 +740,13 @@ def agg_hit_df(non_ovl_hits, max_hit_fragments=0, keep_extent=False,
     agg_hits = non_ovl_hits \
         .groupby(['query','hit']) \
         .agg(agg_dict) \
-        .eval('pctid=100 * matches / mlen') \
         .reset_index()
+    if has_identity:
+        agg_hits = agg_hits.eval('pctid=100 * matches / mlen')
     
     # calculate mfrac if we can
-    if 'qlen' in agg_hits.columns and 'hlen' in agg_hits.columns:
+    if (has_identity and 'qlen' in agg_hits.columns
+            and 'hlen' in agg_hits.columns):
         agg_hits = agg_hits.eval('mfrac=200 * matches / (hlen + qlen)')
         
     return agg_hits    
@@ -680,7 +764,8 @@ def agg_hit_df_polars(non_ovl_hits, max_hit_fragments=0, keep_extent=False,
         else non_ovl_hits.schema.names()
     )
     end_offset = 0 if _use_bed_coords(bed_coords, columns) else 1
-    if 'matches' not in columns:
+    has_identity = _has_identity(columns)
+    if has_identity and 'matches' not in columns:
         non_ovl_hits = non_ovl_hits.with_columns(
                     (pl.col('pctid') * pl.col('mlen') /
                      100).alias('matches')
@@ -689,18 +774,22 @@ def agg_hit_df_polars(non_ovl_hits, max_hit_fragments=0, keep_extent=False,
     # allow for the option to just sum the first N fragments
     if max_hit_fragments > 0:
         non_ovl_hits = non_ovl_hits.sort(
-            pl.col('matches'), descending=True
+            pl.col(_fragment_rank_col(columns)), descending=True,
+            maintain_order=True,  # ties: same choice as pandas
         ).group_by(
             pl.col('query'), pl.col('hit')     # for each query/hit pair
         ).head(
             max_hit_fragments   # take the first N hits
         )
 
-    # addup match ids and match lengths
-    agg_args = [
-        pl.col('matches').sum(),
-        pl.col('mlen').sum(),
-    ]
+    # addup match ids (if known) and match lengths
+    agg_args = [pl.col('mlen').sum()]
+    if has_identity:
+        agg_args.insert(0, pl.col('matches').sum())
+
+    # and scores, if present
+    if 'score' in columns:
+        agg_args.append(pl.col('score').sum())
 
     # also save qlen and hlen if present
     for col in ['qlen', 'hlen']:
@@ -732,13 +821,14 @@ def agg_hit_df_polars(non_ovl_hits, max_hit_fragments=0, keep_extent=False,
         pl.col('hit'),
     ).agg(
         *agg_args
-    ).with_columns(
-        (pl.col('matches') * 100 / pl.col('mlen')).alias('pctid')
     )
-    
+    if has_identity:
+        agg_hits = agg_hits.with_columns(
+            (pl.col('matches') * 100 / pl.col('mlen')).alias('pctid')
+        )
 
     # calculate mfrac if we can
-    if ('qlen' in columns) and ('hlen' in columns):
+    if has_identity and ('qlen' in columns) and ('hlen' in columns):
         agg_hits = agg_hits.with_columns(
             (
                 pl.col('matches') * 200 / (

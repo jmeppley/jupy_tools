@@ -51,6 +51,24 @@ LASTAL_TEXT = (
     "80\th2\t500\t50\t+\t1500\tq1\t400\t50\t-\t1000\t20,0:3,27\tEG2=1e-10\tE=3e-15\n"
 )
 
+# Two PAF fragments for one query/hit pair. PAF positions are 0-based and
+# end-exclusive, so lengths are end - start
+PAF_PAIR = (
+    "q\t1000\t0\t100\t+\th\t2000\t500\t600\t90\t100\t60\n"
+    "q\t1000\t200\t250\t-\th\t2000\t1000\t1050\t45\t50\t60\n"
+)
+
+# lastal fragments for overlap removal and aggregation
+#   q1/h1: 3 fragments, the 3rd overlaps the 1st
+#   q1/h2: 1 fragment on the - strand: its start (600) is on the reverse
+#     strand, so it covers 200-400 on the forward strand
+LASTAL_FRAGMENTS = (
+    "150\th1\t10\t100\t+\t2000\tq1\t0\t100\t+\t1000\t100\tEG2=1\tE=1e-40\n"
+    "80\th1\t500\t50\t+\t2000\tq1\t400\t50\t+\t1000\t50\tEG2=1\tE=1e-20\n"
+    "60\th1\t30\t40\t+\t2000\tq1\t20\t40\t+\t1000\t40\tEG2=1\tE=1e-10\n"
+    "90\th2\t0\t200\t+\t1500\tq1\t600\t200\t-\t1000\t200\tEG2=1\tE=1e-30\n"
+)
+
 
 ###
 # constants
@@ -89,6 +107,9 @@ def test_hit_table_rexps(fmt, text):
     ("73,0:1,15,0:1,13,0:1,9", 73 + 1 + 15 + 1 + 13 + 1 + 9),
     ("10,5:0,10", 25),
     ("10,2:7,10", 27),
+    # ungapped blocks can come in as numbers
+    (100, 100),
+    (numpy.int64(42), 42),
 ])
 def test_compute_last_hit_values(blocks, mlen):
     assert hit_tables.computeLastHitValues(blocks) == mlen
@@ -285,8 +306,52 @@ def test_parse_lastal():
     assert list(df.evalue) == [2.5e-40, 3e-15]
     # end positions computed from start + alignment length
     assert list(df.hend) == [109, 549]
-    assert list(df.qend) == [101, 351]
     assert list(df.qsmult) == [1, -1]
+    # the - strand alignment starts at 400 on the reverse strand of a 1000bp
+    #  query: that's 599 on the forward strand, going back to 550
+    assert list(df.qstart) == [0, 599]
+    assert list(df.qend) == [101, 550]
+
+
+def test_parse_lastal_reverse_hit_strand():
+    """ the hit (reference) strand can be - too """
+    text = "90\th1\t100\t50\t-\t2000\tq1\t10\t50\t+\t1000\t50\tEG2=1\tE=1\n"
+    df = hit_tables.parse_blast_m8(_stream(text), format=hit_tables.LASTAL)
+    assert (df.hstart[0], df.hend[0]) == (1899, 1850)
+    assert (df.qstart[0], df.qend[0]) == (10, 59)
+
+
+def test_parse_lastal_reverse_hit_strand_polars(pl, tmp_path):
+    path = _write(tmp_path, "90\th1\t100\t50\t-\t2000\tq1\t10\t50\t+\t1000\t50\tEG2=1\tE=1\n")
+    df = hit_tables.parse_blast_m8(path, format=hit_tables.LASTAL,
+                                   use_polars=True)
+    assert df.select('hstart', 'hend', 'qstart', 'qend').row(0) == \
+        (1899, 1850, 10, 59)
+
+
+@pytest.mark.parametrize('text', [LASTAL_TEXT, LASTAL_FRAGMENTS],
+                         ids=['lastal_gapped', 'lastal'])
+def test_parse_lastal_matches_overlap_ranges(text):
+    """ parsed positions are the forward strand ranges used for overlaps """
+    df = hit_tables.parse_blast_m8(_stream(text), format=hit_tables.LASTAL)
+    lines = [l for l in text.splitlines() if not l.startswith("#")]
+    for (_, row), line in zip(df.iterrows(), lines):
+        data = hit_tables.lastal_rexp.search(line).groupdict()
+        for pref in ['q', 'h']:
+            start, end = hit_tables._lastal_forward_range(
+                *[data[pref + k] for k in ['start', 'mlen', 'strand', 'len']])
+            # parsed ends are inclusive
+            assert sorted([row[pref + 'start'], row[pref + 'end']]) == \
+                [start, end - 1]
+
+
+def test_agg_hit_table_lastal_extent():
+    """ keep_extent gives forward strand positions for - strand hits """
+    agg = hit_tables.agg_hit_table(_stream(LASTAL_FRAGMENTS),
+                                   format=hit_tables.LASTAL, keep_extent=True)
+    q1h2 = agg.set_index(['query', 'hit']).loc[('q1', 'h2')]
+    # reverse strand start 600, size 200 in a 1000bp query: 200-399
+    assert (q1h2.qstart, q1h2.qend, q1h2.qmlen) == (200, 399, 200)
 
 
 def test_parse_blast_pair_overlap_buffer():
@@ -306,9 +371,44 @@ def test_parse_blast_pair_overlap_buffer():
 
 def test_parse_blast_pair_overlap_bad_format():
     with pytest.raises(Exception, match="not supported"):
-        hit_tables.parse_blast_m8(_stream(LASTAL_TEXT),
-                                  format=hit_tables.LASTAL,
+        hit_tables.parse_blast_m8(_stream(SMALL_BLAST),
+                                  format="NOT_A_FORMAT",
                                   pair_overlap_buffer=0)
+
+
+@pytest.mark.parametrize("start, size, strand, seq_len, expected", [
+    (10, 100, '+', 2000, (10, 110)),
+    ("10", "100", '+', "2000", (10, 110)),
+    # - strand starts are counted from the end of the sequence
+    (600, 200, '-', 1000, (200, 400)),
+    (0, 100, '-', 1000, (900, 1000)),
+])
+def test_lastal_forward_range(start, size, strand, seq_len, expected):
+    assert hit_tables._lastal_forward_range(start, size, strand, seq_len) \
+        == expected
+
+
+def test_parse_lastal_overlap_removal():
+    df = hit_tables.parse_blast_m8(_stream(LASTAL_FRAGMENTS),
+                                   format=hit_tables.LASTAL,
+                                   pair_overlap_buffer=0)
+    # the 3rd q1/h1 fragment overlaps the 1st
+    assert list(df.score) == [150, 80, 90]
+
+
+def test_parse_lastal_overlap_removal_reverse_strand():
+    """ - strand positions are compared on the forward strand """
+    text = (
+        # forward strand: query 0-100
+        "100\th1\t0\t100\t+\t2000\tq1\t0\t100\t+\t1000\t100\tEG2=1\tE=1\n"
+        # reverse start 0 is the END of the query (900-1000): no overlap
+        "90\th1\t500\t100\t+\t2000\tq1\t0\t100\t-\t1000\t100\tEG2=1\tE=1\n"
+        # reverse start 850 is forward 50-150: overlaps the first
+        "80\th1\t1000\t100\t+\t2000\tq1\t850\t100\t-\t1000\t100\tEG2=1\tE=1\n"
+    )
+    df = hit_tables.parse_blast_m8(_stream(text), format=hit_tables.LASTAL,
+                                   pair_overlap_buffer=0)
+    assert list(df.score) == [100, 90]
 
 
 ###
@@ -408,6 +508,29 @@ def test_parse_blast_polars_matches_pandas(pl, tmp_path):
     assert df['score'].to_list() == list(pd_df.score)
 
 
+# every alignment is ungapped, so the blocks column looks like integers
+LASTAL_UNGAPPED = (
+    "150\th1\t10\t100\t+\t2000\tq1\t0\t100\t+\t1000\t100\tEG2=1e-30\tE=2.5e-40\n"
+    "80\th2\t500\t50\t+\t1500\tq1\t400\t50\t-\t1000\t50\tEG2=1e-10\tE=3e-15\n"
+)
+
+
+def test_parse_lastal_ungapped():
+    df = hit_tables.parse_blast_m8(_stream(LASTAL_UNGAPPED),
+                                   format=hit_tables.LASTAL)
+    assert list(df.mlen) == [100, 50]
+    assert list(df.hend) == [109, 549]
+    assert list(df.evalue) == [2.5e-40, 3e-15]
+
+
+def test_parse_lastal_ungapped_polars(pl, tmp_path):
+    path = _write(tmp_path, LASTAL_UNGAPPED)
+    df = hit_tables.parse_blast_m8(path, format=hit_tables.LASTAL,
+                                   use_polars=True)
+    assert df['mlen'].to_list() == [100, 50]
+    assert df['hend'].to_list() == [109, 549]
+
+
 def test_parse_lastal_polars(pl, tmp_path):
     path = _write(tmp_path, LASTAL_TEXT)
     df = hit_tables.parse_blast_m8(path, format=hit_tables.LASTAL,
@@ -417,6 +540,8 @@ def test_parse_lastal_polars(pl, tmp_path):
     assert df['hend'].to_list() == list(pd_df.hend)
     assert df['qend'].to_list() == list(pd_df.qend)
     assert df['qsmult'].to_list() == list(pd_df.qsmult)
+    assert df['qstart'].to_list() == list(pd_df.qstart)
+    assert df['hstart'].to_list() == list(pd_df.hstart)
     assert df['evalue'].to_list() == list(pd_df.evalue)
 
 
@@ -542,6 +667,40 @@ def test_agg_hit_df_keep_extent():
     _check_small_agg(agg, keep_extent=True)
 
 
+def test_agg_hit_df_max_fragments_lengths_and_extent():
+    """ lengths and extents come from the same (best) fragments as mlen """
+    agg = hit_tables.agg_hit_table(_stream(SMALL_BLAST_PLUS),
+                                   format=hit_tables.BLAST_PLUS,
+                                   max_hit_fragments=1, keep_extent=True)
+    q1h1 = agg.set_index(['query', 'hit']).loc[('q1', 'h1')]
+    # the best fragment is q 1-100, h 1-100
+    assert (q1h1.mlen, q1h1.qmlen, q1h1.hmlen) == (100, 100, 100)
+    assert (q1h1.qstart, q1h1.qend, q1h1.hstart, q1h1.hend) == (1, 100, 1, 100)
+
+    # with 2 fragments, everything covers both
+    agg = hit_tables.agg_hit_table(_stream(SMALL_BLAST_PLUS),
+                                   format=hit_tables.BLAST_PLUS,
+                                   max_hit_fragments=2, keep_extent=True)
+    q1h1 = agg.set_index(['query', 'hit']).loc[('q1', 'h1')]
+    assert (q1h1.mlen, q1h1.qmlen, q1h1.qstart, q1h1.qend) == (150, 150, 1, 250)
+
+
+@pytest.mark.parametrize('fmt, text', [
+    (hit_tables.BLAST_PLUS, SMALL_BLAST_PLUS),
+    (hit_tables.PAF, PAF_PAIR),
+    # no identity, and - strand positions are reversed
+    (hit_tables.LASTAL, LASTAL_FRAGMENTS),
+], ids=['blast+', 'paf', 'lastal'])
+@pytest.mark.parametrize('options', [
+    {}, {'max_hit_fragments': 1}, {'keep_extent': True},
+], ids=['default', 'max_fragments', 'keep_extent'])
+def test_agg_hit_df_input_unchanged(fmt, text, options):
+    hits = hit_tables.parse_blast_m8(_stream(text), format=fmt)
+    original = hits.copy()
+    hit_tables.agg_hit_df(hits, **options)
+    pandas.testing.assert_frame_equal(hits, original)
+
+
 def test_agg_hit_df_max_fragments():
     hits = hit_tables.parse_blast_m8(_stream(SMALL_BLAST_PLUS),
                                      format=hit_tables.BLAST_PLUS,
@@ -575,12 +734,6 @@ def test_agg_hit_df_with_matches_column():
     assert 'mfrac' in agg.columns
 
 
-# Two PAF fragments for one query/hit pair. PAF positions are 0-based and
-# end-exclusive, so lengths are end - start
-PAF_PAIR = (
-    "q\t1000\t0\t100\t+\th\t2000\t500\t600\t90\t100\t60\n"
-    "q\t1000\t200\t250\t-\th\t2000\t1000\t1050\t45\t50\t60\n"
-)
 
 
 @pytest.mark.parametrize('fmt', [hit_tables.PAF, hit_tables.PAF_ALL])
@@ -628,6 +781,92 @@ def test_agg_hit_table_ovl_buffer():
 
 def test_agg_hit_table_empty():
     assert hit_tables.agg_hit_table(_stream("# empty\n")) is None
+
+
+# scores for SMALL_BLAST_PLUS after overlap removal (the 3rd q1/h1 fragment,
+#  score 60, overlaps the 1st)
+SMALL_AGG_SCORES = {('q1', 'h1'): 200 + 90, ('q1', 'h2'): 350, ('q2', 'h1'): 500}
+
+
+def _scores(agg):
+    """ {(query, hit): score} from a pandas or polars aggregated table """
+    if not isinstance(agg, pandas.DataFrame):
+        agg = _polars_to_pandas(agg)
+    return {(q, h): s for q, h, s in agg[['query', 'hit', 'score']].values}
+
+
+@pytest.mark.parametrize('fmt, text', [
+    (hit_tables.BLAST_PLUS, SMALL_BLAST_PLUS),
+    (hit_tables.BLAST, SMALL_BLAST),
+])
+def test_agg_hit_table_score(fmt, text):
+    """ scores are summed over the (non overlapping) fragments """
+    agg = hit_tables.agg_hit_table(_stream(text), format=fmt)
+    assert _scores(agg) == SMALL_AGG_SCORES
+
+    # without overlap removal, all 3 q1/h1 fragments are summed
+    hits = hit_tables.parse_blast_m8(_stream(text), format=fmt)
+    assert _scores(hit_tables.agg_hit_df(hits))[('q1', 'h1')] == 200 + 90 + 60
+
+
+def test_agg_hit_table_score_max_fragments():
+    """ only the scores of the fragments that are kept are summed """
+    agg = hit_tables.agg_hit_table(_stream(SMALL_BLAST_PLUS),
+                                   format=hit_tables.BLAST_PLUS,
+                                   max_hit_fragments=1)
+    # the best q1/h1 fragment (most matches) has score 200
+    assert _scores(agg) == {**SMALL_AGG_SCORES, ('q1', 'h1'): 200}
+
+
+def test_agg_hit_table_lastal():
+    """ lastal tables have no identity, so there's no matches/pctid/mfrac """
+    agg = hit_tables.agg_hit_table(_stream(LASTAL_FRAGMENTS),
+                                   format=hit_tables.LASTAL)
+    assert list(agg.columns) == ['query', 'hit', 'mlen', 'score', 'qlen',
+                                 'hlen', 'qmlen', 'hmlen']
+    agg = agg.set_index(['query', 'hit'])
+    # the overlapping fragment is dropped
+    assert agg.loc[('q1', 'h1')].to_dict() == {
+        'mlen': 150, 'score': 230, 'qlen': 1000, 'hlen': 2000,
+        'qmlen': 150, 'hmlen': 150}
+    assert agg.loc[('q1', 'h2')].to_dict() == {
+        'mlen': 200, 'score': 90, 'qlen': 1000, 'hlen': 1500,
+        'qmlen': 200, 'hmlen': 200}
+
+
+def test_agg_hit_table_lastal_options():
+    # no overlap removal: all 3 q1/h1 fragments
+    agg = hit_tables.agg_hit_table(_stream(LASTAL_FRAGMENTS),
+                                   format=hit_tables.LASTAL, ovl_buffer=-1)
+    assert _scores(agg)[('q1', 'h1')] == 290
+    # without identity, the best fragments are the highest scoring ones
+    agg = hit_tables.agg_hit_table(_stream(LASTAL_FRAGMENTS),
+                                   format=hit_tables.LASTAL,
+                                   max_hit_fragments=1)
+    q1h1 = agg.set_index(['query', 'hit']).loc[('q1', 'h1')]
+    assert (q1h1.score, q1h1.mlen) == (150, 100)
+
+
+def test_fragment_rank_col():
+    assert hit_tables._fragment_rank_col(['pctid', 'mlen', 'score']) == 'matches'
+    assert hit_tables._fragment_rank_col(['matches', 'mlen']) == 'matches'
+    assert hit_tables._fragment_rank_col(['mlen', 'score']) == 'score'
+    assert hit_tables._fragment_rank_col(['mlen']) == 'mlen'
+
+
+def test_agg_hit_df_lastal_max_fragments_by_mlen():
+    """ without identity or score, the longest fragments are kept """
+    hits = hit_tables.parse_blast_m8(_stream(LASTAL_FRAGMENTS),
+                                     format=hit_tables.LASTAL) \
+        .drop(columns=['score'])
+    agg = hit_tables.agg_hit_df(hits, max_hit_fragments=1)
+    assert agg.set_index(['query', 'hit']).loc[('q1', 'h1'), 'mlen'] == 100
+
+
+def test_agg_hit_table_no_score():
+    """ tables without a score column (eg PAF) don't get one """
+    agg = hit_tables.agg_hit_table(_stream(PAF_TEXT), format=hit_tables.PAF)
+    assert 'score' not in agg.columns
 
 
 ###
@@ -714,6 +953,92 @@ def test_agg_hit_polars_df_paf_lengths(pl, tmp_path):
     assert hit_tables.agg_hit_df(hits, bed_coords=False)['qmlen'].to_list() \
         == [152]
     assert hit_tables.agg_hit_df_polars(hits)['qmlen'].to_list() == [150]
+
+
+@pytest.mark.parametrize('lazy', [False, True])
+def test_agg_hit_polars_df_score(pl, tmp_path, lazy):
+    """ agg_hit_df hands polars tables to agg_hit_polars_df """
+    path = _write(tmp_path, SMALL_BLAST_PLUS)
+    hits = hit_tables.parse_blast_m8(path, format=hit_tables.BLAST_PLUS,
+                                     use_polars='lazy' if lazy else True,
+                                     pair_overlap_buffer=0)
+    agg = hit_tables.agg_hit_df(hits)
+    if lazy:
+        assert isinstance(agg, pl.LazyFrame)
+        agg = agg.collect()
+    assert _scores(agg) == SMALL_AGG_SCORES
+
+
+@pytest.mark.parametrize('max_hit_fragments, q1h1_score', [(0, 290), (1, 200)])
+def test_agg_hit_table_polars_score(pl, tmp_path, max_hit_fragments,
+                                    q1h1_score):
+    """ agg_hit_table(use_polars=True) uses agg_hit_df_polars """
+    path = _write(tmp_path, SMALL_BLAST_PLUS)
+    agg = hit_tables.agg_hit_table(path, format=hit_tables.BLAST_PLUS,
+                                   use_polars=True,
+                                   max_hit_fragments=max_hit_fragments)
+    assert _scores(agg) == {**SMALL_AGG_SCORES, ('q1', 'h1'): q1h1_score}
+
+    # and directly
+    hits = hit_tables.parse_blast_m8(path, format=hit_tables.BLAST_PLUS,
+                                     use_polars=True, pair_overlap_buffer=0)
+    agg = hit_tables.agg_hit_df_polars(hits, max_hit_fragments=max_hit_fragments)
+    assert _scores(agg)[('q1', 'h1')] == q1h1_score
+
+
+@pytest.mark.parametrize('fmt, text', [
+    (hit_tables.BLAST, SMALL_BLAST),
+    (hit_tables.BLAST_PLUS, SMALL_BLAST_PLUS),
+    (hit_tables.BLAST_PLUS, M8_TEXT),
+    (hit_tables.PAF, PAF_TEXT),
+    (hit_tables.PAF, PAF_PAIR),
+    (hit_tables.PAF_ALL, PAF_TEXT),
+    (hit_tables.LASTAL, LASTAL_FRAGMENTS),
+    (hit_tables.LASTAL, LASTAL_TEXT),
+], ids=['blast', 'blast+', 'blast+_m8', 'paf', 'paf_pair', 'paf_all',
+        'lastal', 'lastal_gapped'])
+@pytest.mark.parametrize('options', [
+    {},
+    {'keep_extent': True},
+    {'ovl_buffer': 100},
+    {'max_hit_fragments': 1},
+    {'max_hit_fragments': 1, 'keep_extent': True},
+], ids=['default', 'keep_extent', 'ovl_buffer', 'max_fragments',
+        'max_fragments_extent'])
+def test_agg_hit_table_pandas_polars_agree(pl, tmp_path, fmt, text, options):
+    """ pandas and polars aggregation give the same columns and values """
+    _check_pandas_polars_agree(tmp_path, fmt, text, **options)
+
+
+def _check_pandas_polars_agree(tmp_path, fmt, text, **options):
+    path = _write(tmp_path, text)
+    pd_agg = hit_tables.agg_hit_table(path, format=fmt, **options)
+    pl_agg = _polars_to_pandas(
+        hit_tables.agg_hit_table(path, format=fmt, use_polars=True, **options))
+
+    assert set(pl_agg.columns) == set(pd_agg.columns)
+    pd_agg = pd_agg.sort_values(['query', 'hit']).reset_index(drop=True)
+    pl_agg = pl_agg.sort_values(['query', 'hit']).reset_index(drop=True)[
+        list(pd_agg.columns)]
+    for col in pd_agg.columns:
+        if pandas.api.types.is_numeric_dtype(pd_agg[col]):
+            assert numpy.allclose(pl_agg[col], pd_agg[col]), col
+        else:
+            assert list(pl_agg[col]) == list(pd_agg[col]), col
+
+
+@pytest.mark.parametrize('lazy', [False, True])
+def test_agg_hit_polars_df_lastal(pl, tmp_path, lazy):
+    """ agg_hit_polars_df (via agg_hit_df) without identity columns """
+    path = _write(tmp_path, LASTAL_FRAGMENTS)
+    hits = hit_tables.parse_blast_m8(path, format=hit_tables.LASTAL,
+                                     use_polars='lazy' if lazy else True,
+                                     pair_overlap_buffer=0)
+    agg = hit_tables.agg_hit_df(hits)
+    if lazy:
+        agg = agg.collect()
+    assert not {'matches', 'pctid', 'mfrac'} & set(agg.columns)
+    assert _scores(agg) == {('q1', 'h1'): 230, ('q1', 'h2'): 90}
 
 
 def test_agg_hit_polars_df_errors(pl):

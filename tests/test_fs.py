@@ -249,10 +249,59 @@ def test_human_readable_bytes_more(val, code):
 
 
 def test_get_user_lookup_table():
+    import pwd
     users = filesystem.get_user_lookup_table()
     assert isinstance(users, pandas.Series)
     # root is always uid 0
     assert users[0] == 'root'
+    # every listed user id maps to (one of) its names
+    for uid, name in users.items():
+        assert pwd.getpwuid(uid).pw_uid == uid
+        assert pwd.getpwnam(name).pw_uid == uid
+
+
+class FakePwEntry:
+    def __init__(self, name, uid):
+        self.pw_name = name
+        self.pw_uid = uid
+
+
+def test_get_user_lookup_table_from_pwd(monkeypatch):
+    """
+    users come from the pwd module (not /etc/passwd, which on macOS has
+    comment lines and leaves out directory users)
+    """
+    import builtins, pwd
+    monkeypatch.setattr(pwd, 'getpwall', lambda: [
+        FakePwEntry('root', 0), FakePwEntry('alice', 1000),
+        # a second name for the same id
+        FakePwEntry('alice2', 1000), FakePwEntry('nobody', -2),
+    ])
+    real_open = builtins.open
+
+    def no_passwd(path, *args, **kwargs):
+        assert 'passwd' not in str(path)
+        return real_open(path, *args, **kwargs)
+    monkeypatch.setattr(builtins, 'open', no_passwd)
+
+    users = filesystem.get_user_lookup_table()
+    assert users.to_dict() == {0: 'root', 1000: 'alice', -2: 'nobody'}
+
+    monkeypatch.setattr(pwd, 'getpwall', lambda: [])
+    assert len(filesystem.get_user_lookup_table()) == 0
+
+
+def test_get_user_name():
+    import pwd
+    me = os.getuid()
+    assert filesystem._get_user_name(me) == pwd.getpwuid(me).pw_name
+    assert filesystem._get_user_name(numpy.int64(0)) == 'root'
+    # names (and other non integers) are passed through
+    assert filesystem._get_user_name('somebody') == 'somebody'
+    # unknown and out of range ids are returned as is
+    unused = max(e.pw_uid for e in pwd.getpwall()) + 12345
+    assert filesystem._get_user_name(unused) == unused
+    assert filesystem._get_user_name(2 ** 70) == 2 ** 70
 
 
 def test_get_bin_bounds_string():
@@ -288,6 +337,9 @@ def test_get_file_sizes_and_dates_by_uid(tmp_path):
     usage, min_date = filesystem.get_file_sizes_and_dates_by_uid(str(tmp_path))
     assert len(usage) == 1
     owner, = usage
+    # files are grouped by owner name
+    import pwd
+    assert owner == pwd.getpwuid(os.getuid()).pw_name
     entries = usage[owner]
     assert sorted(e[0] for e in entries) == [10, 100, 1000]
     assert {os.path.basename(e[2]) for e in entries} == set(sizes)
@@ -307,9 +359,44 @@ def test_get_file_sizes_and_dates_by_uid_users(tmp_path):
                                                           users=[me])
     assert sum(len(v) for v in usage.values()) == 3
 
+    # by name, too
+    import pwd
+    my_name = pwd.getpwuid(me).pw_name
+    usage, _ = filesystem.get_file_sizes_and_dates_by_uid(str(tmp_path),
+                                                          users=[my_name])
+    assert list(usage) == [my_name]
+
     usage, _ = filesystem.get_file_sizes_and_dates_by_uid(
         str(tmp_path), users=['no_such_user_hopefully'])
     assert len(usage) == 0
+
+
+def test_get_file_sizes_and_dates_by_uid_unlisted_user(tmp_path, monkeypatch):
+    """
+    file owners that the user database doesn't list (eg directory users on
+    macOS, or LDAP without enumeration) are still named
+    """
+    import pwd
+    _make_aged_files(tmp_path)
+    monkeypatch.setattr(pwd, 'getpwall', lambda: [])
+    my_name = pwd.getpwuid(os.getuid()).pw_name
+    usage, _ = filesystem.get_file_sizes_and_dates_by_uid(str(tmp_path))
+    assert list(usage) == [my_name]
+    usage, _ = filesystem.get_file_sizes_and_dates_by_uid(
+        str(tmp_path), users=[os.getuid()])
+    assert list(usage) == [my_name]
+
+
+def test_get_file_sizes_and_dates_by_uid_unknown_owner(tmp_path, monkeypatch):
+    """ files owned by an id with no user name are grouped by the id """
+    import pwd
+    _make_aged_files(tmp_path)
+
+    def no_users(uid):
+        raise KeyError(uid)
+    monkeypatch.setattr(pwd, 'getpwuid', no_users)
+    usage, _ = filesystem.get_file_sizes_and_dates_by_uid(str(tmp_path))
+    assert list(usage) == [os.getuid()]
 
 
 @pytest.mark.parametrize('time_stat', ['mtime', 'ctime', 'atime', 'max'])
